@@ -1,0 +1,128 @@
+{# Макет карточки инструмента. Подключение в других шаблонах: {% import "base.html" as b with context %} #}
+{% macro card(t) %}
+<article class="card">
+  <a class="card-img" href="{{ url_for('tool', tool_id=t.id) }}">
+    <img src="{{ url_for('img', name=t.img) }}" alt="{{ t.name }}" loading="lazy">
+  </a>
+  <div class="card-body">
+    <span class="brand">{{ t.brand }}</span>
+    <h3><a href="{{ url_for('tool', tool_id=t.id) }}">{{ t.name }}</a></h3>
+    <dl class="card-meta">
+      <div><dt>Аренда в сутки</dt><dd class="price">{{ t.price|rub }}</dd></div>
+      <div><dt>Залог</dt><dd>{{ t.deposit|rub }}</dd></div>
+    </dl>
+    <div class="card-foot">
+      <span class="stock {{ 'ok' if t.qty > 3 else ('low' if t.qty > 0 else 'out') }}">Доступно: {{ t.qty }} шт.</span>
+      <form method="post" action="{{ url_for('cart_add') }}">
+        <input type="hidden" name="tool_id" value="{{ t.id }}">
+        <input type="hidden" name="days" value="1">
+        <input type="hidden" name="next" value="{{ current }}">
+        <button class="btn btn-sm" {{ 'disabled' if t.qty == 0 }}>В заявку</button>
+      </form>
+    </div>
+  </div>
+</article>
+{% endmacro %}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Монтаж — аренда строительного инструмента{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('css') }}">
+</head>
+<body class="mode-{{ mode }}">
+
+<header class="topbar">
+  <div class="wrap topbar-in">
+    <a class="logo" href="{{ url_for('index') }}"><span class="logo-mark"></span>Монтаж</a>
+
+    <nav class="nav">
+      <a href="{{ url_for('catalog') }}">Каталог</a>
+      <a href="{{ url_for('b2b') }}">Для бизнеса</a>
+      <a href="{{ url_for('booking') }}">Оформление</a>
+    </nav>
+
+    <form class="search" action="{{ url_for('catalog') }}" method="get" role="search">
+      <input type="search" name="q" placeholder="Найти инструмент" aria-label="Поиск по каталогу">
+      <button aria-label="Искать"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></button>
+    </form>
+
+    <div class="seg" role="group" aria-label="Тип клиента">
+      <a class="{{ 'on' if mode == 'b2c' }}" href="{{ url_for('set_mode', m='b2c', next=current) }}">Частным</a>
+      <a class="{{ 'on' if mode == 'b2b' }}" href="{{ url_for('set_mode', m='b2b', next=current) }}">Бизнесу</a>
+    </div>
+
+    <a class="icon-btn" href="#cart" aria-label="Заявка на аренду">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7h12l-1 12H7L6 7z"/><path d="M9 7V6a3 3 0 016 0v1"/></svg>
+      {% if cart_count %}<span class="badge">{{ cart_count }}</span>{% endif %}
+    </a>
+    <a class="icon-btn" href="{{ url_for('profile') }}" aria-label="Личный кабинет">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg>
+    </a>
+  </div>
+</header>
+
+{% with msgs = get_flashed_messages() %}{% if msgs %}
+<div class="toasts">{% for m in msgs %}<div class="toast">{{ m }}</div>{% endfor %}</div>
+{% endif %}{% endwith %}
+
+<main>{% block content %}{% endblock %}</main>
+
+<footer class="footer">
+  <div class="wrap footer-in">
+    <div><a class="logo" href="{{ url_for('index') }}"><span class="logo-mark"></span>Монтаж</a>
+      <p class="muted">Учебный проект. Название, контакты и цены — временные.</p></div>
+    <div class="footer-links">
+      <a href="{{ url_for('catalog') }}">Каталог</a>
+      <a href="{{ url_for('b2b') }}">Для бизнеса</a>
+      <a href="{{ url_for('login') }}">Войти</a>
+      <a href="{{ url_for('register') }}">Регистрация</a>
+    </div>
+  </div>
+</footer>
+
+{# Боковая панель заявки: открывается CSS-селектором :target (ссылка #cart), JavaScript не нужен #}
+<aside class="drawer" id="cart" aria-label="Заявка на аренду">
+  <a class="drawer-bg" href="#close" aria-label="Закрыть панель"></a>
+  <div class="drawer-panel">
+    <div class="drawer-head">
+      <h2>Заявка на аренду</h2>
+      <a class="icon-btn" href="#close" aria-label="Закрыть">✕</a>
+    </div>
+    <div class="drawer-body">
+      {% if cart_items %}
+        {% for i in cart_items %}
+        <div class="line">
+          <img src="{{ url_for('img', name=i.tool.img) }}" alt="">
+          <div>
+            <span class="brand">{{ i.tool.brand }}</span>
+            <strong>{{ i.tool.name }}</strong>
+            <small class="muted">{{ i.days }} сут. × {{ i.tool.price|rub }} = {{ i.sum|rub }}</small>
+          </div>
+          <form method="post" action="{{ url_for('cart_remove', tool_id=i.tool.id) }}">
+            <input type="hidden" name="next" value="{{ current }}">
+            <button class="icon-btn" aria-label="Убрать">✕</button>
+          </form>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="empty">
+          <p><strong>В заявке пока пусто</strong></p>
+          <p class="muted">Нажмите «В заявку» на карточке инструмента — страница останется на месте.</p>
+          <a class="btn btn-ghost" href="{{ url_for('catalog') }}#list">Перейти в каталог</a>
+        </div>
+      {% endif %}
+    </div>
+    {% if cart_items %}
+    <div class="drawer-foot">
+      <div class="sum"><span>Аренда</span><b>{{ cart_rent|rub }}</b></div>
+      <div class="sum"><span>Залог</span><b>{{ cart_deposit|rub }}</b></div>
+      <a class="btn btn-block" href="{{ url_for('booking') }}">Перейти к оформлению</a>
+      <form method="post" action="{{ url_for('cart_clear') }}"><input type="hidden" name="next" value="{{ current }}"><button class="link-btn">Очистить заявку</button></form>
+    </div>
+    {% endif %}
+  </div>
+</aside>
+</body>
+</html>

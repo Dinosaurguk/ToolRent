@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% import "base.html" as b with context %}
+{% block content %}
+
+<section class="hero">
+  <div class="glow g1"></div><div class="glow g2"></div>
+  <div class="wrap hero-in">
+    <div class="hero-text">
+      {% if mode == 'b2b' %}
+        <h1>Инструмент для объектов. <span class="dim">Без простоев и закупок.</span></h1>
+        <p class="lead">Аренда для строительных организаций: заявки по объектам, отсрочка платежа и закрывающие документы.</p>
+        <div class="row"><a class="btn btn-lg" href="{{ url_for('b2b') }}">Кабинет компании</a><a class="btn btn-ghost btn-lg" href="{{ url_for('catalog') }}">Открыть каталог</a></div>
+      {% else %}
+        <h1>Берите инструмент. <span class="dim">Не покупайте его.</span></h1>
+        <p class="lead">Перфораторы, генераторы, леса и измерительная техника в аренду на сутки и дольше. Заберите сами или закажите доставку.</p>
+        <div class="row"><a class="btn btn-lg" href="{{ url_for('catalog') }}">Выбрать инструмент</a><a class="btn btn-ghost btn-lg" href="#categories">Категории</a></div>
+      {% endif %}
+    </div>
+    <div class="hero-visual" aria-hidden="true">
+      <div class="ring"></div>
+      <img class="hero-tool" src="{{ url_for('img', name='perforator.svg') }}" alt="">
+      <div class="glass chip c1"><small class="muted">Аренда от</small><b>600&nbsp;₽ / сутки</b></div>
+      <div class="glass chip c2"><small class="muted">Залог</small><b>возвращается при сдаче</b></div>
+      <div class="glass chip c3"><small class="muted">Получение</small><b>самовывоз или доставка</b></div>
+    </div>
+  </div>
+</section>
+
+<section class="marquee" aria-label="Популярные запросы">
+  <div class="marquee-track">
+    {% for k in range(2) %}
+      {% for c in categories %}<a class="tag" href="{{ url_for('catalog', cat=c.slug) }}#list">{{ c.name }}</a>{% endfor %}
+      <a class="tag" href="{{ url_for('catalog', q='перфоратор') }}#list">Перфоратор в аренду</a>
+      <a class="tag" href="{{ url_for('catalog', avail=1) }}#list">Есть в наличии</a>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="section" id="categories">
+  <div class="wrap">
+    <h2 class="h-xl">Что нужно на объекте?</h2>
+    <div class="cats">
+      {% for c in categories %}
+      <a class="cat" href="{{ url_for('catalog', cat=c.slug) }}#list">
+        <span class="cat-circle"><img src="{{ url_for('img', name=c.img) }}" alt=""></span>
+        <span class="cat-name">{{ c.name }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+{% if mode == 'b2b' %}
+<section class="section">
+  <div class="wrap">
+    <h2 class="h-xl">Мониторинг снабжения</h2>
+    <p class="muted demo-note">Значения ниже — демонстрационные. После подключения базы они будут браться из Access.</p>
+    <div class="stats">
+      <div class="glass stat"><span class="demo">демо</span><b>1&nbsp;234</b><span>единицы оборудования в каталоге</span></div>
+      <div class="glass stat"><span class="demo">демо</span><b>87%</b><span>свободно к выдаче сегодня</span></div>
+      <div class="glass stat"><span class="demo">демо</span><b>2–4 ч</b><span>срок доставки на объект</span></div>
+      <a class="glass stat stat-link" href="{{ url_for('b2b') }}#ai"><b>Смета</b><span>Загрузить Excel или PDF</span></a>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="h-xl">Популярное сейчас</h2>
+      <a class="link" href="{{ url_for('catalog') }}#list">Весь каталог</a>
+    </div>
+    <div class="grid">{% for t in popular %}{{ b.card(t) }}{% endfor %}</div>
+    <p class="muted demo-note">Карточки — демонстрационные, база данных пока не подключена.</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap steps">
+    <div class="glass step"><h3>Выберите</h3><p class="muted">Найдите инструмент через поиск или категории, сравните цену суток и залог.</p></div>
+    <div class="glass step"><h3>Соберите заявку</h3><p class="muted">Панель справа хранит выбор, пока вы листаете каталог.</p></div>
+    <div class="glass step"><h3>Заберите или закажите доставку</h3><p class="muted">Залог вернём при сдаче инструмента в исправном состоянии.</p></div>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% import "base.html" as b with context %}
+{% block title %}Каталог — Монтаж{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div class="wrap">
+    <h1 class="h-xl">{% if not_found %}Страница не найдена{% elif active_cat %}{{ active_cat.name }}{% else %}Каталог инструмента{% endif %}</h1>
+    {% if not_found %}<p class="lead muted">Такой страницы нет. Выберите инструмент в каталоге.</p>{% endif %}
+  </div>
+</section>
+
+<section class="wrap catalog" id="list">
+  <form class="filters glass" method="get" action="{{ url_for('catalog') }}#list">
+    <label class="field">Поиск
+      <input type="search" name="q" value="{{ q }}" placeholder="Модель или бренд">
+    </label>
+    <label class="field">Категория
+      <select name="cat">
+        <option value="">Все категории</option>
+        {% for c in categories %}<option value="{{ c.slug }}" {{ 'selected' if c.slug == cat }}>{{ c.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field">Бренд
+      <select name="brand">
+        <option value="">Все бренды</option>
+        {% for x in brands %}<option {{ 'selected' if x == brand }}>{{ x }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field">Сортировка
+      <select name="sort">
+        <option value="">По умолчанию</option>
+        <option value="price_asc" {{ 'selected' if sort == 'price_asc' }}>Сначала дешевле</option>
+        <option value="price_desc" {{ 'selected' if sort == 'price_desc' }}>Сначала дороже</option>
+        <option value="name" {{ 'selected' if sort == 'name' }}>По названию</option>
+      </select>
+    </label>
+    <label class="check"><input type="checkbox" name="avail" value="1" {{ 'checked' if avail }}><span>Только в наличии</span></label>
+    <button class="btn btn-block">Показать</button>
+    <a class="link-btn" href="{{ url_for('catalog') }}#list">Сбросить фильтры</a>
+  </form>
+
+  <div class="results">
+    {% if tools %}
+      <p class="muted">Найдено: {{ tools|length }}. Данные демонстрационные.</p>
+      <div class="grid grid-2">{% for t in tools %}{{ b.card(t) }}{% endfor %}</div>
+    {% else %}
+      <div class="glass empty-big">
+        <h3>Ничего не нашлось</h3>
+        <p class="muted">Попробуйте другое слово или сбросьте фильтры.</p>
+        <a class="btn btn-ghost" href="{{ url_for('catalog') }}#list">Показать весь каталог</a>
+      </div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

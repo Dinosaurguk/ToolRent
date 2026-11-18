@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Для бизнеса — Монтаж{% endblock %}
+{% block content %}
+<section class="hero hero-sm"><div class="glow g1"></div>
+  <div class="wrap">
+    <h1 class="h-hero">Снабжение строительных организаций</h1>
+    <p class="lead muted">Визуальный каркас кабинета компании. Все блоки ниже — макеты без бизнес-логики; цифры — демонстрационные.</p>
+  </div>
+</section>
+
+<section class="section"><div class="wrap">
+  <h2 class="h-xl">Мониторинг снабжения</h2>
+  <div class="stats">
+    <div class="glass stat"><span class="demo">демо</span><b>1&nbsp;234</b><span>единицы оборудования в каталоге</span></div>
+    <div class="glass stat"><span class="demo">демо</span><b>87%</b><span>доступно к выдаче</span></div>
+    <div class="glass stat"><span class="demo">демо</span><b>2–4 ч</b><span>доставка на объект</span></div>
+    <div class="glass stat"><span class="demo">демо</span><b>12</b><span>заявок на согласовании</span></div>
+  </div>
+</div></section>
+
+<section class="section" id="ai"><div class="wrap two-col">
+  <div>
+    <h2 class="h-xl">AI-снабженец</h2>
+    <p class="lead muted">Загрузите смету, чтобы подобрать инструмент. Сейчас это только макет формы: файл не читается и не анализируется.</p>
+  </div>
+  <form class="glass drop" method="post" action="{{ url_for('b2b_upload') }}" enctype="multipart/form-data">
+    <label class="drop-area" for="estimate">
+      <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>
+      <strong>Выберите файл сметы</strong>
+      <span class="muted">Excel или PDF</span>
+      <input type="file" id="estimate" name="estimate" accept=".xls,.xlsx,.pdf">
+    </label>
+    <button class="btn btn-block">Отправить файл</button>
+  </form>
+</div></section>
+
+<section class="section"><div class="wrap two-col">
+  <div class="glass map" role="img" aria-label="Макет карты объектов">
+    <i class="pin" style="--x:22%;--y:38%"></i><i class="pin" style="--x:58%;--y:24%"></i>
+    <i class="pin" style="--x:72%;--y:64%"></i><i class="pin" style="--x:38%;--y:70%"></i>
+    <span class="map-label">Карта объектов — макет, без картографической интеграции</span>
+  </div>
+  <div>
+    <h2 class="h-xl">Объекты компании</h2>
+    <p class="lead muted">Здесь будет список строительных площадок и история аренды по каждой из них.</p>
+    <div class="glass obj"><b>Объект 1</b><span class="muted">пример строки</span><span class="demo">демо</span></div>
+    <div class="glass obj"><b>Объект 2</b><span class="muted">пример строки</span><span class="demo">демо</span></div>
+  </div>
+</div></section>
+
+<section class="section"><div class="wrap two-col">
+  <div class="glass p-card">
+    <h3>Бизнес-баланс</h3>
+    <dl class="kv"><dt>Кредитный лимит</dt><dd>— ₽ <span class="demo">макет</span></dd><dt>Постоплата</dt><dd>— дней <span class="demo">макет</span></dd></dl>
+    <div class="bar"><i style="width:35%"></i></div>
+    <small class="muted">Полоса — демонстрация. Реальные значения будут из базы.</small>
+  </div>
+  <div class="glass p-card">
+    <h3>Роли в кабинете</h3>
+    <div class="roles"><span>Директор</span><span>Прораб</span><span>Бухгалтер</span></div>
+    <p class="muted">Согласование заявок между ролями — на будущих этапах.</p>
+  </div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <h2 class="h-xl">Скоро</h2>
+  <div class="grid grid-4">
+    <div class="glass soon"><h3>Перемещение между объектами</h3><p class="muted">Передача инструмента без возврата на склад.</p></div>
+    <div class="glass soon"><h3>Подписка TaaS</h3><p class="muted">Инструмент как сервис по ежемесячному тарифу.</p></div>
+    <div class="glass soon"><h3>ЭДО</h3><p class="muted">Обмен документами через Диадок или СБИС.</p></div>
+    <div class="glass soon"><h3>Налоговая выгода</h3><p class="muted">Расчёт: аренда или покупка.</p></div>
+  </div>
+</div></section>
+{% endblock %}

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Оформление аренды — Монтаж{% endblock %}
+{% block content %}
+<section class="page-head"><div class="wrap"><h1 class="h-xl">Оформление аренды</h1></div></section>
+<section class="wrap booking">
+  <div class="glass p-card">
+    <h3>Ваша заявка</h3>
+    {% if cart_items %}
+      {% for i in cart_items %}
+      <div class="line">
+        <img src="{{ url_for('img', name=i.tool.img) }}" alt="">
+        <div><span class="brand">{{ i.tool.brand }}</span><strong>{{ i.tool.name }}</strong>
+          <small class="muted">{{ i.days }} сут. × {{ i.tool.price|rub }}</small></div>
+        <b>{{ i.sum|rub }}</b>
+      </div>
+      {% endfor %}
+      <div class="sum"><span>Аренда</span><b>{{ cart_rent|rub }}</b></div>
+      <div class="sum"><span>Залог</span><b>{{ cart_deposit|rub }}</b></div>
+    {% else %}
+      <div class="empty"><p class="muted">Заявка пуста. Добавьте инструмент из каталога.</p>
+      <a class="btn btn-ghost" href="{{ url_for('catalog') }}#list">Перейти в каталог</a></div>
+    {% endif %}
+  </div>
+  <form class="glass p-card" method="post">
+    <h3>Даты и получение</h3>
+    <div class="two">
+      <label class="field">Дата начала<input type="date" name="start" required></label>
+      <label class="field">Дата окончания<input type="date" name="end" required></label>
+    </div>
+    <fieldset class="dur dur-2">
+      <legend>Способ получения</legend>
+      <span><input type="radio" name="delivery" id="dv1" value="pickup" checked><label for="dv1"><b>Самовывоз</b><small>со склада</small></label></span>
+      <span><input type="radio" name="delivery" id="dv2" value="delivery"><label for="dv2"><b>Доставка</b><small>на адрес или объект</small></label></span>
+    </fieldset>
+    <label class="field">Комментарий<textarea name="comment" rows="3"></textarea></label>
+    <button class="btn btn-lg btn-block" {{ 'disabled' if not cart_items }}>Отправить заявку</button>
+  </form>
+</section>
+{% endblock %}

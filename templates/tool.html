@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% import "base.html" as b with context %}
+{% block title %}{{ t.name }} — Монтаж{% endblock %}
+{% block content %}
+<section class="wrap crumbs muted">
+  <a href="{{ url_for('catalog') }}">Каталог</a> / <a href="{{ url_for('catalog', cat=t.cat) }}#list">{{ category.name }}</a> / {{ t.brand }}
+</section>
+
+<section class="wrap tool">
+  <div class="tool-photo glass"><div class="glow g1"></div><img src="{{ url_for('img', name=t.img) }}" alt="{{ t.name }}"></div>
+
+  <div class="tool-info">
+    <span class="brand">{{ t.brand }}</span>
+    <h1 class="h-lg">{{ t.name }}</h1>
+    <p class="lead muted">{{ t.desc }}</p>
+
+    <form class="glass buy" method="post" action="{{ url_for('cart_add') }}">
+      <input type="hidden" name="tool_id" value="{{ t.id }}">
+      <input type="hidden" name="next" value="{{ current }}">
+      <div class="buy-top">
+        <div><small class="muted">Аренда в сутки</small><div class="price-xl">{{ t.price|rub }}</div></div>
+        <div><small class="muted">Залог</small><div class="price-md">{{ t.deposit|rub }}</div></div>
+        <div><small class="muted">Доступно</small><div class="price-md">{{ t.qty }} шт.</div></div>
+      </div>
+      <fieldset class="dur">
+        <legend>Срок аренды</legend>
+        {% for d in durations %}
+        <span><input type="radio" name="days" id="d{{ d }}" value="{{ d }}" {{ 'checked' if loop.first }}>
+        <label for="d{{ d }}"><b>{{ d }} сут.</b><small>{{ (t.price * d)|rub }}</small></label></span>
+        {% endfor %}
+      </fieldset>
+      <button class="btn btn-lg btn-block" {{ 'disabled' if t.qty == 0 }}>Добавить в заявку</button>
+    </form>
+
+    <h2 class="h-md">Характеристики</h2>
+    <table class="specs">
+      {% for k, v in t.specs %}<tr><th>{{ k }}</th><td>{{ v }}</td></tr>{% endfor %}
+    </table>
+  </div>
+</section>
+
+{% if similar %}
+<section class="section"><div class="wrap">
+  <h2 class="h-xl">Из той же категории</h2>
+  <div class="grid">{% for x in similar %}{{ b.card(x) }}{% endfor %}</div>
+</div></section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Вход — Монтаж{% endblock %}
+{% block content %}
+<section class="auth"><div class="glow g1"></div>
+  <form class="glass auth-card" method="post">
+    <h1 class="h-lg">Вход</h1>
+    <p class="muted">Откройте историю аренды и ускорьте оформление.</p>
+    <label class="field">Логин<input name="login" autocomplete="username" required></label>
+    <label class="field">Пароль<input type="password" name="password" autocomplete="current-password" required></label>
+    <button class="btn btn-block btn-lg">Войти</button>
+    <p class="muted center">Нет аккаунта? <a class="link" href="{{ url_for('register') }}">Зарегистрироваться</a></p>
+  </form>
+</section>
+{% endblock %}
