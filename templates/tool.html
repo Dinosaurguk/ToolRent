@@ -3,7 +3,7 @@
 {% block title %}{{ t.name }} — Монтаж{% endblock %}
 {% block content %}
 <section class="wrap crumbs muted">
-  <a href="{{ url_for('catalog') }}">Каталог</a> / <a href="{{ url_for('catalog', cat=t.cat) }}#list">{{ category.name }}</a> / {{ t.brand }}
+  <a href="{{ url_for('catalog') }}">Каталог</a> / {% if category %}<a href="{{ url_for('catalog', cat=t.cat) }}#list">{{ category.name }}</a> / {% endif %}{{ t.brand }}
 </section>
 
 <section class="wrap tool">
@@ -12,7 +12,7 @@
   <div class="tool-info">
     <span class="brand">{{ t.brand }}</span>
     <h1 class="h-lg">{{ t.name }}</h1>
-    <p class="lead muted">{{ t.desc }}</p>
+    {% if t.desc %}<div class="lead muted prewrap">{{ t.desc }}</div>{% endif %}
 
     <form class="glass buy" method="post" action="{{ url_for('cart_add') }}">
       <input type="hidden" name="tool_id" value="{{ t.id }}">
@@ -32,10 +32,10 @@
       <button class="btn btn-lg btn-block" {{ 'disabled' if t.qty == 0 }}>Добавить в заявку</button>
     </form>
 
+    {% if t.specs %}
     <h2 class="h-md">Характеристики</h2>
-    <table class="specs">
-      {% for k, v in t.specs %}<tr><th>{{ k }}</th><td>{{ v }}</td></tr>{% endfor %}
-    </table>
+    <div class="specs-text prewrap">{{ t.specs }}</div>
+    {% endif %}
   </div>
 </section>
 

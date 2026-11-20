@@ -19,7 +19,7 @@
     <div class="hero-visual" aria-hidden="true">
       <div class="ring"></div>
       <img class="hero-tool" src="{{ url_for('img', name='perforator.svg') }}" alt="">
-      <div class="glass chip c1"><small class="muted">Аренда от</small><b>600&nbsp;₽ / сутки</b></div>
+      <div class="glass chip c1"><small class="muted">Аренда от</small><b>{% if min_price %}{{ min_price|rub }} / сутки{% else %}посуточно{% endif %}</b></div>
       <div class="glass chip c2"><small class="muted">Залог</small><b>возвращается при сдаче</b></div>
       <div class="glass chip c3"><small class="muted">Получение</small><b>самовывоз или доставка</b></div>
     </div>
@@ -29,7 +29,7 @@
 <section class="marquee" aria-label="Популярные запросы">
   <div class="marquee-track">
     {% for k in range(2) %}
-      {% for c in categories %}<a class="tag" href="{{ url_for('catalog', cat=c.slug) }}#list">{{ c.name }}</a>{% endfor %}
+      {% for c in categories %}<a class="tag" href="{{ url_for('catalog', cat=c.id) }}#list">{{ c.name }}</a>{% endfor %}
       <a class="tag" href="{{ url_for('catalog', q='перфоратор') }}#list">Перфоратор в аренду</a>
       <a class="tag" href="{{ url_for('catalog', avail=1) }}#list">Есть в наличии</a>
     {% endfor %}
@@ -41,7 +41,7 @@
     <h2 class="h-xl">Что нужно на объекте?</h2>
     <div class="cats">
       {% for c in categories %}
-      <a class="cat" href="{{ url_for('catalog', cat=c.slug) }}#list">
+      <a class="cat" href="{{ url_for('catalog', cat=c.id) }}#list">
         <span class="cat-circle"><img src="{{ url_for('img', name=c.img) }}" alt=""></span>
         <span class="cat-name">{{ c.name }}</span>
       </a>
@@ -68,11 +68,11 @@
 <section class="section">
   <div class="wrap">
     <div class="section-head">
-      <h2 class="h-xl">Популярное сейчас</h2>
+      <h2 class="h-xl">Инструменты каталога</h2>
       <a class="link" href="{{ url_for('catalog') }}#list">Весь каталог</a>
     </div>
     <div class="grid">{% for t in popular %}{{ b.card(t) }}{% endfor %}</div>
-    <p class="muted demo-note">Карточки — демонстрационные, база данных пока не подключена.</p>
+    {% if data_source == 'demo' %}<p class="muted demo-note">Карточки — демонстрационные: база Access не подключена или недоступна (причина — в консоли сервера).</p>{% endif %}
   </div>
 </section>
 

@@ -17,13 +17,13 @@
     <label class="field">Категория
       <select name="cat">
         <option value="">Все категории</option>
-        {% for c in categories %}<option value="{{ c.slug }}" {{ 'selected' if c.slug == cat }}>{{ c.name }}</option>{% endfor %}
+        {% for c in categories %}<option value="{{ c.id }}" {{ 'selected' if c.id == cat }}>{{ c.name }}</option>{% endfor %}
       </select>
     </label>
     <label class="field">Бренд
       <select name="brand">
         <option value="">Все бренды</option>
-        {% for x in brands %}<option {{ 'selected' if x == brand }}>{{ x }}</option>{% endfor %}
+        {% for x in brands %}<option value="{{ x.id }}" {{ 'selected' if x.id == brand }}>{{ x.name }}</option>{% endfor %}
       </select>
     </label>
     <label class="field">Сортировка
@@ -41,7 +41,7 @@
 
   <div class="results">
     {% if tools %}
-      <p class="muted">Найдено: {{ tools|length }}. Данные демонстрационные.</p>
+      <p class="muted">Найдено: {{ tools|length }}.{% if data_source == 'demo' %} Данные демонстрационные: база Access недоступна.{% endif %}</p>
       <div class="grid grid-2">{% for t in tools %}{{ b.card(t) }}{% endfor %}</div>
     {% else %}
       <div class="glass empty-big">
