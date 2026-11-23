@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — ToolRent{% endblock %}
+{% block content %}
+<section class="auth"><div class="glow g1"></div>
+  <div class="glass auth-card center">
+    <h1 class="h-lg">{{ title }}</h1>
+    <p class="muted">{{ text }}</p>
+    {% if link %}<a class="btn btn-lg" href="{{ link[0] }}">{{ link[1] }}</a>{% endif %}
+  </div>
+</section>
+{% endblock %}

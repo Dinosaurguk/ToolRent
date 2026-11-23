@@ -1,11 +1,10 @@
 {% extends "base.html" %}
 {% import "base.html" as b with context %}
-{% block title %}Каталог — Монтаж{% endblock %}
+{% block title %}Каталог — ToolRent{% endblock %}
 {% block content %}
 <section class="page-head">
   <div class="wrap">
-    <h1 class="h-xl">{% if not_found %}Страница не найдена{% elif active_cat %}{{ active_cat.name }}{% else %}Каталог инструмента{% endif %}</h1>
-    {% if not_found %}<p class="lead muted">Такой страницы нет. Выберите инструмент в каталоге.</p>{% endif %}
+    <h1 class="h-xl">{% if active_cat %}{{ active_cat.name }}{% else %}Каталог инструмента{% endif %}</h1>
   </div>
 </section>
 
@@ -41,7 +40,7 @@
 
   <div class="results">
     {% if tools %}
-      <p class="muted">Найдено: {{ tools|length }}.{% if data_source == 'demo' %} Данные демонстрационные: база Access недоступна.{% endif %}</p>
+      <p class="muted">Найдено: {{ tools|length }}.</p>
       <div class="grid grid-2">{% for t in tools %}{{ b.card(t) }}{% endfor %}</div>
     {% else %}
       <div class="glass empty-big">

@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% import "base.html" as b with context %}
+{% block title %}Админ-панель — ToolRent{% endblock %}
+{% block content %}
+{% set tabs = [('home','Обзор','admin_home'),('orders','Заявки','admin_orders'),('tools','Инструменты','admin_tools'),('dicts','Категории и бренды','admin_dicts'),('users','Пользователи','admin_users'),('coupons','Купоны','admin_coupons'),('journal','Журнал','admin_journal')] %}
+<section class="wrap adm">
+  <h1 class="h-lg">Админ-панель</h1>
+  <nav class="tabs">{% for key, label, ep in tabs %}<a class="{{ 'on' if section == key or section.startswith(key[:-1]) and key != 'home' }}" href="{{ url_for(ep) }}">{{ label }}</a>{% endfor %}</nav>
+
+{% if section == 'home' %}
+  <div class="stats">
+    <a class="glass stat stat-link" href="{{ url_for('admin_orders', status='На рассмотрении') }}"><b>{{ n_new }}</b><span>позиций ждут решения</span></a>
+    <div class="glass stat"><b>{{ n_ok }}</b><span>одобрено, ждут выдачи</span></div>
+    <div class="glass stat"><b>{{ n_out }}</b><span>сейчас в аренде</span></div>
+    <div class="glass stat"><b class="{{ 'bad-text' if n_over }}">{{ n_over }}</b><span>просрочено возвратов</span></div>
+    <a class="glass stat stat-link" href="{{ url_for('admin_users') }}"><b>{{ n_unconfirmed }}</b><span>пользователей без подтверждённой почты</span></a>
+    <div class="glass stat"><b>{{ n_blocked }}</b><span>заблокировано</span></div>
+  </div>
+  <div class="glass p-card"><h3>Последние заявки</h3>
+    {% for o in recent %}<a class="orow" href="{{ url_for('admin_order', rid=o.id_rent) }}"><b>№{{ o.id_rent }}</b><span>{{ um[o.id_user].login if um.get(o.id_user) else o.id_user }}</span><span>{{ o.created|dt }}</span>{{ b.pill(o.status) }}<b>{{ o.rent_sum|rub }}</b></a>
+    {% else %}<p class="muted">Заявок пока нет.</p>{% endfor %}</div>
+
+{% elif section == 'tools' %}
+  <form class="glass filters-row" method="get">
+    <input type="search" name="q" value="{{ q }}" placeholder="Название или бренд">
+    <select name="state"><option value="">Все</option><option value="1" {{ 'selected' if state == '1' }}>Активные</option><option value="0" {{ 'selected' if state == '0' }}>Снятые с аренды</option></select>
+    <button class="btn btn-sm">Найти</button><a class="btn btn-sm btn-ghost" href="{{ url_for('admin_tool_form') }}">+ Новый инструмент</a>
+  </form>
+  <div class="glass p-card"><div class="table-wrap"><table class="tbl"><thead><tr><th></th><th>№</th><th>Инструмент</th><th>Категория</th><th>Цена/сутки</th><th>Залог</th><th>Склад</th><th>Статус</th><th></th></tr></thead><tbody>
+  {% for t in tools %}<tr><td><img class="thumb" src="{{ url_for('img', name=t.img) }}" alt=""></td><td>{{ t.id }}</td>
+    <td><span class="brand">{{ t.brand }}</span><a class="link" href="{{ url_for('admin_tool_form', tool_id=t.id) }}">{{ t.name }}</a></td>
+    <td>{% for c in categories if c.id == t.cat %}{{ c.name }}{% endfor %}</td><td>{{ t.price|rub }}</td><td>{{ t.deposit|rub }}</td><td>{{ t.stock }}</td>
+    <td><span class="pill {{ 's-ok' if t.active else 's-off' }}">{{ 'активен' if t.active else 'снят' }}</span></td>
+    <td><form method="post" action="{{ url_for('admin_tool_toggle', tool_id=t.id) }}">{{ csrf_field() }}<button class="btn btn-sm btn-ghost">{{ 'Снять' if t.active else 'Включить' }}</button></form></td></tr>
+  {% else %}<tr><td colspan="9" class="muted">Ничего не найдено.</td></tr>{% endfor %}</tbody></table></div></div>
+
+{% elif section == 'tool_form' %}
+  <form class="glass p-card" method="post" action="{{ url_for('admin_tool_save') }}" enctype="multipart/form-data">
+    {{ csrf_field() }}<input type="hidden" name="id" value="{{ t.id if t else 0 }}">
+    <h3>{{ 'Инструмент №' ~ t.id if t else 'Новый инструмент' }}</h3>
+    <label class="field">Название<input name="name" value="{{ t.name if t else '' }}" required maxlength="255"></label>
+    <div class="two">
+      <label class="field">Бренд<select name="brand" required><option value="">—</option>{% for id, n in brands.items() %}<option value="{{ id }}" {{ 'selected' if t and t.brand_id == id }}>{{ n }}</option>{% endfor %}</select></label>
+      <label class="field">Категория<select name="cat" required><option value="">—</option>{% for c in cats %}<option value="{{ c.id }}" {{ 'selected' if t and t.cat == c.id }}>{{ c.name }}</option>{% endfor %}</select></label>
+      <label class="field">Цена за сутки, ₽<input name="price" inputmode="decimal" value="{{ t.price if t else '' }}" required></label>
+      <label class="field">Залог, ₽<input name="deposit" inputmode="decimal" value="{{ t.deposit if t else '0' }}"></label>
+      <label class="field">Количество на складе<input type="number" name="stock" min="0" value="{{ t.stock if t else 0 }}" required></label>
+      <label class="check"><input type="checkbox" name="active" value="1" {{ 'checked' if not t or t.active }}><span>Активен (виден в каталоге)</span></label>
+    </div>
+    <label class="field">Описание<textarea name="descr" rows="6">{{ t.desc if t else '' }}</textarea></label>
+    <label class="field">Характеристики<textarea name="specs" rows="6">{{ t.specs if t else '' }}</textarea></label>
+    <div class="photo-row">{% if t %}<img class="thumb big" src="{{ url_for('img', name=t.img) }}" alt="">{% endif %}
+      <label class="field">Фотография (JPG, PNG или WEBP до 5 МБ){% if t and t.photo %} — сейчас: {{ t.photo }}{% endif %}<input type="file" name="photo" accept="image/jpeg,image/png,image/webp"></label></div>
+    <div class="row"><button class="btn">Сохранить</button><a class="btn btn-ghost" href="{{ url_for('admin_tools') }}">К списку</a></div>
+  </form>
+
+{% elif section == 'dicts' %}
+  <div class="two-col top">
+  {% for kind, title, rows in [('brand','Бренды', brands.items()|list), ('category','Категории', cat_rows)] %}
+    <div class="glass p-card"><h3>{{ title }}</h3>
+      {% for id, name in rows %}
+      <div class="dict-row">
+        <form method="post" action="{{ url_for('admin_dict_action', kind=kind, action='rename') }}">{{ csrf_field() }}<input type="hidden" name="id" value="{{ id }}"><input name="name" value="{{ name }}" required><button class="btn btn-sm btn-ghost">Сохранить</button></form>
+        {% set n = (nb if kind == 'brand' else nc).get(id, 0) %}
+        <small class="muted">инструментов: {{ n }}</small>
+        <form method="post" action="{{ url_for('admin_dict_action', kind=kind, action='delete') }}">{{ csrf_field() }}<input type="hidden" name="id" value="{{ id }}"><button class="btn btn-sm btn-ghost" {{ 'disabled' if n }} title="{{ 'Есть инструменты: удалить нельзя' if n }}">Удалить</button></form>
+      </div>{% endfor %}
+      <form class="dict-row" method="post" action="{{ url_for('admin_dict_action', kind=kind, action='add') }}">{{ csrf_field() }}<input name="name" placeholder="Новое название" required><button class="btn btn-sm">Добавить</button></form>
+    </div>
+  {% endfor %}
+  </div>
+
+{% elif section == 'orders' %}
+  <form class="glass filters-row" method="get"><select name="status"><option value="">Все статусы</option>{% for s in statuses %}<option {{ 'selected' if s == status }}>{{ s }}</option>{% endfor %}</select><button class="btn btn-sm">Показать</button></form>
+  <div class="glass p-card"><div class="table-wrap"><table class="tbl"><thead><tr><th>№</th><th>Клиент</th><th>Создана</th><th>Статус</th><th>Аренда</th><th>Залог</th></tr></thead><tbody>
+  {% for o in orders %}<tr><td><a class="link" href="{{ url_for('admin_order', rid=o.id_rent) }}">№{{ o.id_rent }}</a></td><td>{{ um[o.id_user].login if um.get(o.id_user) else o.id_user }}</td><td>{{ o.created|dt }}</td><td>{{ b.pill(o.status) }}</td><td>{{ o.rent_sum|rub }}</td><td>{{ o.deposit_sum|rub }}</td></tr>
+  {% else %}<tr><td colspan="6" class="muted">Заявок нет.</td></tr>{% endfor %}</tbody></table></div></div>
+
+{% elif section == 'order' %}
+  <div class="glass p-card">
+    <div class="row between"><h3>Заявка №{{ order.id_rent }}</h3>{{ b.pill(order.status) }}</div>
+    <p class="muted">Клиент: {% if customer %}<a class="link" href="{{ url_for('admin_user', uid=customer.id_user) }}">{{ customer.login }}</a> ({{ customer.fio }}, {{ customer.email }}{% if customer.phone %}, {{ customer.phone }}{% endif %}){% endif %} · {{ order.created|dt }} · {{ order.delivery }}</p>
+    <div class="acc-list">
+    {% for p in positions %}
+      <details class="pos" open>
+        <summary><span><b>{{ p.tool.name if p.tool else '№' ~ p.id_tool }}</b> × {{ p.qty }}</span><span class="muted">{{ p.start|d }}–{{ p.end|d }}</span>{{ b.pill(p.status) }}</summary>
+        <div class="pos-body">
+          <div class="sum"><span>{{ p.price_at|rub }} × {{ p.days }} сут.</span><b>{{ p.sum|rub }}</b></div>
+          {% if p.status == 'На рассмотрении' or p.status == 'Одобрена' %}<small class="muted">Свободно на эти даты сейчас: {{ p.free }} шт.</small>{% endif %}
+          <div class="row">
+            {% if p.status == 'На рассмотрении' %}
+              <form method="post" action="{{ url_for('admin_order_item', rid=order.id_rent) }}">{{ csrf_field() }}<input type="hidden" name="item_id" value="{{ p.id_item }}"><input type="hidden" name="action" value="approve"><button class="btn btn-sm">Одобрить</button></form>
+              <form class="inline-rej" method="post" action="{{ url_for('admin_order_item', rid=order.id_rent) }}">{{ csrf_field() }}<input type="hidden" name="item_id" value="{{ p.id_item }}"><input type="hidden" name="action" value="reject"><input name="reason" placeholder="Причина отказа (обязательно)" required maxlength="255"><button class="btn btn-sm btn-ghost">Отказать</button></form>
+            {% elif p.status == 'Одобрена' %}
+              <form method="post" action="{{ url_for('admin_order_item', rid=order.id_rent) }}">{{ csrf_field() }}<input type="hidden" name="item_id" value="{{ p.id_item }}"><input type="hidden" name="action" value="issue"><button class="btn btn-sm">Подтвердить выдачу</button></form>
+            {% elif p.status == 'Выдана' %}
+              <form method="post" action="{{ url_for('admin_order_item', rid=order.id_rent) }}">{{ csrf_field() }}<input type="hidden" name="item_id" value="{{ p.id_item }}"><input type="hidden" name="action" value="return"><button class="btn btn-sm">Подтвердить возврат</button></form>
+            {% endif %}
+          </div>
+          <ul class="tl">{% for h in p.history %}<li><b>{{ h.new_status }}</b> <span class="muted">{{ h.at|dt }} · {{ um[h.by_user].login if um.get(h.by_user) else h.by_user }}</span>{% if h.comment and h.new_status != 'На рассмотрении' %}<br><small>{{ h.comment }}</small>{% endif %}</li>{% endfor %}</ul>
+        </div>
+      </details>
+    {% endfor %}
+    </div>
+    <div class="sum"><span>Аренда до скидок</span><b>{{ order.sum_before|rub }}</b></div>
+    <div class="sum"><span>Скидки</span><b>−{{ order.discount|rub }}</b></div>
+    <div class="sum total"><span>Аренда</span><b>{{ order.rent_sum|rub }}</b></div>
+    <div class="sum"><span>Залог</span><b>{{ order.deposit_sum|rub }}</b></div>
+    <h3>История заявки</h3>
+    <ul class="tl">{% for h in history %}<li><b>{{ h.new_status }}</b> <span class="muted">{{ h.at|dt }} · {{ um[h.by_user].login if um.get(h.by_user) else h.by_user }}</span>{% if h.comment %}<br><small>{{ h.comment }}</small>{% endif %}</li>{% endfor %}</ul>
+  </div>
+
+{% elif section == 'users' %}
+  <form class="glass filters-row" method="get"><input type="search" name="q" value="{{ q }}" placeholder="Логин, ФИО, email, телефон"><button class="btn btn-sm">Найти</button></form>
+  <div class="glass p-card"><div class="table-wrap"><table class="tbl"><thead><tr><th>№</th><th>Логин</th><th>ФИО</th><th>Email</th><th>Роль</th><th>Баллы</th><th>Статус</th></tr></thead><tbody>
+  {% for u in users %}<tr><td>{{ u.id_user }}</td><td><a class="link" href="{{ url_for('admin_user', uid=u.id_user) }}">{{ u.login }}</a></td><td>{{ u.fio }}</td><td>{{ u.email }} {% if not u.email_ok %}<span class="pill s-wait">не подтв.</span>{% endif %}</td><td>{{ u.role }}</td><td>{{ u.points }}</td><td>{% if u.active %}<span class="pill s-ok">активен</span>{% else %}<span class="pill s-bad">заблокирован</span>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="7" class="muted">Никого не найдено.</td></tr>{% endfor %}</tbody></table></div></div>
+
+{% elif section == 'user' %}
+  <div class="two-col top">
+    <div class="glass p-card"><h3>{{ u.fio }} <span class="muted">({{ u.login }})</span></h3>
+      <dl class="kv"><dt>Роль</dt><dd>{{ u.role }}</dd><dt>Email</dt><dd>{{ u.email }}</dd><dt>Почта</dt><dd>{{ 'подтверждена' if u.email_ok else 'не подтверждена' }}</dd>
+      <dt>Телефон</dt><dd>{{ u.phone or '—' }}</dd><dt>Адрес</dt><dd>{{ u.address or '—' }}</dd><dt>Регистрация</dt><dd>{{ u.reg_date|d }}</dd><dt>Баллы</dt><dd>{{ u.points }}</dd>
+      <dt>Заявок / завершено</dt><dd>{{ stats.orders }} / {{ stats.done }}</dd><dt>Оценочная выгода</dt><dd>{{ stats.benefit|rub }}</dd>
+      <dt>Статус</dt><dd>{% if u.active %}активен{% else %}заблокирован: {{ u.block_reason }} ({{ u.block_date|d }}){% endif %}</dd></dl>
+      {% if org %}<h3>Реквизиты</h3><dl class="kv"><dt>Тип</dt><dd>{{ org.org_type }}</dd><dt>Компания</dt><dd>{{ org.company }}</dd><dt>ИНН</dt><dd>{{ org.inn }}</dd><dt>КПП</dt><dd>{{ org.kpp or '—' }}</dd><dt>Адрес</dt><dd>{{ org.legal_address }}</dd></dl>{% endif %}
+    </div>
+    <div class="glass p-card"><h3>Действия</h3>
+      {% if not u.email_ok %}<form method="post" action="{{ url_for('admin_user_action', uid=u.id_user, action='confirm-email') }}">{{ csrf_field() }}<button class="btn btn-sm">Подтвердить почту вручную</button></form>{% endif %}
+      {% if u.role != 'admin' %}
+        {% if u.active %}<form class="inline-rej" method="post" action="{{ url_for('admin_user_action', uid=u.id_user, action='block') }}">{{ csrf_field() }}<input name="reason" placeholder="Причина блокировки" required maxlength="255"><button class="btn btn-sm btn-ghost">Заблокировать</button></form>
+        {% else %}<form method="post" action="{{ url_for('admin_user_action', uid=u.id_user, action='unblock') }}">{{ csrf_field() }}<button class="btn btn-sm">Разблокировать</button></form>{% endif %}
+      {% endif %}
+      <form class="inline-rej" method="post" action="{{ url_for('admin_user_action', uid=u.id_user, action='points') }}">{{ csrf_field() }}<input name="delta" placeholder="Баллы (−50 — списать)" required><input name="comment" placeholder="Комментарий" required maxlength="255"><button class="btn btn-sm">Баллы</button></form>
+      <form class="inline-rej" method="post" action="{{ url_for('admin_user_action', uid=u.id_user, action='coupon') }}">{{ csrf_field() }}<select name="coupon_id" required><option value="">Купон…</option>{% for c in coupon_list %}<option value="{{ c.id_coupon }}">{{ c.name }}</option>{% endfor %}</select><input type="date" name="end" title="Срок для этого пользователя (необязательно)"><button class="btn btn-sm">Выдать купон</button></form>
+      <form method="post" action="{{ url_for('admin_user_action', uid=u.id_user, action='message') }}">{{ csrf_field() }}<label class="field">Сообщение пользователю<input name="title" placeholder="Тема" required maxlength="255"><textarea name="text" rows="3" placeholder="Текст" required></textarea></label><button class="btn btn-sm">Отправить</button></form>
+    </div>
+  </div>
+  <div class="glass p-card"><h3>Заявки</h3>{% for o in orders %}<a class="orow" href="{{ url_for('admin_order', rid=o.id_rent) }}"><b>№{{ o.id_rent }}</b><span>{{ o.created|d }}</span>{{ b.pill(o.status) }}<b>{{ o.rent_sum|rub }}</b></a>{% else %}<p class="muted">Заявок нет.</p>{% endfor %}</div>
+  <div class="two-col top">
+    <div class="glass p-card"><h3>Баллы</h3>{% for o in ops %}<div class="orow"><span class="muted">{{ o.dt|d }}</span><span>{{ o.op_type }}</span><b>{{ '%+d'|format(o.delta) }}</b></div>{% else %}<p class="muted">Операций нет.</p>{% endfor %}</div>
+    <div class="glass p-card"><h3>Купоны</h3>{% for c in coupons %}<div class="orow"><span>{{ c.c.name }}</span><span class="pill {{ 's-ok' if c.state == 'Доступен' else 's-off' }}">{{ c.state }}</span></div>{% else %}<p class="muted">Купонов нет.</p>{% endfor %}</div>
+  </div>
+  <div class="glass p-card"><h3>Действия администратора с этим пользователем</h3>{% for j in journal %}<div class="orow"><span class="muted">{{ j.dt|dt }}</span><b>{{ j.action }}</b><span>{{ adm_names[j.id_user_admin].login if adm_names.get(j.id_user_admin) else '' }}</span><small>{{ j.comment or '' }}</small></div>{% else %}<p class="muted">Записей нет.</p>{% endfor %}</div>
+
+{% elif section == 'coupons' %}
+  <div class="row"><a class="btn btn-sm" href="{{ url_for('admin_coupon_form') }}">+ Новый купон</a></div>
+  <div class="glass p-card"><div class="table-wrap"><table class="tbl"><thead><tr><th>Код</th><th>Название</th><th>Скидка</th><th>Срок</th><th>Мин. сумма</th><th>Лимит</th><th>Выдано / использовано</th><th></th></tr></thead><tbody>
+  {% for c in coupons %}<tr><td>{{ c.code }}</td><td><a class="link" href="{{ url_for('admin_coupon_form', cid=c.id_coupon) }}">{{ c.name }}</a> {% if not c.active %}<span class="pill s-off">выкл.</span>{% endif %}</td>
+    <td>{{ (c.amount|string|replace('.00','')) ~ ('%' if c.disc_type == 'Процент' else ' ₽') }}</td><td>{{ c.start|d }} — {{ c.end|d }}</td><td>{{ c.min_sum|rub }}</td><td>{{ c.limit or '∞' }}</td><td>{{ given.get(c.id_coupon, 0) }} / {{ used.get(c.id_coupon, 0) }}</td>
+    <td class="coupon-actions"><form method="post" action="{{ url_for('admin_coupon_toggle', cid=c.id_coupon) }}">{{ csrf_field() }}<button class="btn btn-sm btn-ghost">{{ 'Деактивировать' if c.active else 'Активировать' }}</button></form>
+      <form class="inline-rej" method="post" action="{{ url_for('admin_coupon_assign', cid=c.id_coupon) }}">{{ csrf_field() }}<input name="login" placeholder="Логин" required><button class="btn btn-sm">Выдать</button></form></td></tr>
+  {% else %}<tr><td colspan="8" class="muted">Купонов нет.</td></tr>{% endfor %}</tbody></table></div></div>
+
+{% elif section == 'coupon_form' %}
+  <form class="glass p-card" method="post" action="{{ url_for('admin_coupon_save') }}">{{ csrf_field() }}<input type="hidden" name="id" value="{{ c.id_coupon if c else 0 }}">
+    <h3>{{ 'Купон №' ~ c.id_coupon ~ ' (код ' ~ c.code ~ ')' if c else 'Новый купон' }}</h3>
+    <label class="field">Название<input name="name" value="{{ c.name if c else '' }}" required maxlength="255"></label>
+    <label class="field">Описание<textarea name="descr" rows="3">{{ c.descr or '' if c else '' }}</textarea></label>
+    <div class="two">
+      <label class="field">Тип скидки<select name="disc_type"><option {{ 'selected' if c and c.disc_type == 'Процент' }}>Процент</option><option {{ 'selected' if c and c.disc_type == 'Сумма' }}>Сумма</option></select></label>
+      <label class="field">Размер (процент или рубли)<input name="amount" inputmode="decimal" value="{{ c.amount if c else '' }}" required></label>
+      <label class="field">Действует с<input type="date" name="start" value="{{ c.start|iso if c else '' }}"></label>
+      <label class="field">Действует по<input type="date" name="end" value="{{ c.end|iso if c else '' }}"></label>
+      <label class="field">Минимальная сумма аренды, ₽<input name="min_sum" inputmode="decimal" value="{{ c.min_sum if c else '0' }}"></label>
+      <label class="field">Лимит использований (0 — без лимита)<input type="number" name="limit" min="0" value="{{ c.limit or 0 if c else 0 }}"></label>
+    </div>
+    <label class="check"><input type="checkbox" name="active" value="1" {{ 'checked' if not c or c.active }}><span>Активен</span></label>
+    <div class="row"><button class="btn">Сохранить</button><a class="btn btn-ghost" href="{{ url_for('admin_coupons') }}">К списку</a></div>
+  </form>
+
+{% elif section == 'journal' %}
+  <div class="glass p-card"><h3>Журнал действий администратора</h3><div class="table-wrap"><table class="tbl"><thead><tr><th>Дата</th><th>Исполнитель</th><th>Действие</th><th>Пользователь</th><th>Подробности</th></tr></thead><tbody>
+  {% for r in rows %}<tr><td>{{ r.dt|dt }}</td><td>{{ um[r.id_user_admin].login if um.get(r.id_user_admin) else r.id_user_admin }}</td><td><b>{{ r.action }}</b></td><td>{% if r.id_user_target %}<a class="link" href="{{ url_for('admin_user', uid=r.id_user_target) }}">{{ um[r.id_user_target].login if um.get(r.id_user_target) else r.id_user_target }}</a>{% else %}—{% endif %}</td><td>{{ r.comment or '' }}</td></tr>
+  {% else %}<tr><td colspan="5" class="muted">Записей нет.</td></tr>{% endfor %}</tbody></table></div></div>
+{% endif %}
+</section>
+{% endblock %}

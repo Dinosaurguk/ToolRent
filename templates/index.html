@@ -8,8 +8,8 @@
     <div class="hero-text">
       {% if mode == 'b2b' %}
         <h1>Инструмент для объектов. <span class="dim">Без простоев и закупок.</span></h1>
-        <p class="lead">Аренда для строительных организаций: заявки по объектам, отсрочка платежа и закрывающие документы.</p>
-        <div class="row"><a class="btn btn-lg" href="{{ url_for('b2b') }}">Кабинет компании</a><a class="btn btn-ghost btn-lg" href="{{ url_for('catalog') }}">Открыть каталог</a></div>
+        <p class="lead">Аренда для строительных организаций: одна заявка с несколькими позициями и разными сроками, реквизиты компании в профиле.</p>
+        <div class="row"><a class="btn btn-lg" href="{{ url_for('b2b') }}">Для бизнеса</a><a class="btn btn-ghost btn-lg" href="{{ url_for('catalog') }}">Открыть каталог</a></div>
       {% else %}
         <h1>Берите инструмент. <span class="dim">Не покупайте его.</span></h1>
         <p class="lead">Перфораторы, генераторы, леса и измерительная техника в аренду на сутки и дольше. Заберите сами или закажите доставку.</p>
@@ -54,12 +54,11 @@
 <section class="section">
   <div class="wrap">
     <h2 class="h-xl">Мониторинг снабжения</h2>
-    <p class="muted demo-note">Значения ниже — демонстрационные. После подключения базы они будут браться из Access.</p>
     <div class="stats">
-      <div class="glass stat"><span class="demo">демо</span><b>1&nbsp;234</b><span>единицы оборудования в каталоге</span></div>
-      <div class="glass stat"><span class="demo">демо</span><b>87%</b><span>свободно к выдаче сегодня</span></div>
-      <div class="glass stat"><span class="demo">демо</span><b>2–4 ч</b><span>срок доставки на объект</span></div>
-      <a class="glass stat stat-link" href="{{ url_for('b2b') }}#ai"><b>Смета</b><span>Загрузить Excel или PDF</span></a>
+      <div class="glass stat"><b>{{ stats.positions }}</b><span>позиций в каталоге</span></div>
+      <div class="glass stat"><b>{{ stats.units }}</b><span>единиц оборудования на складе</span></div>
+      <div class="glass stat"><b>{{ stats.free }}</b><span>свободно к выдаче сегодня</span></div>
+      <a class="glass stat stat-link" href="{{ url_for('b2b') }}"><b>Бизнесу</b><span>Как подключить бизнес-профиль</span></a>
     </div>
   </div>
 </section>
@@ -72,8 +71,7 @@
       <a class="link" href="{{ url_for('catalog') }}#list">Весь каталог</a>
     </div>
     <div class="grid">{% for t in popular %}{{ b.card(t) }}{% endfor %}</div>
-    {% if data_source == 'demo' %}<p class="muted demo-note">Карточки — демонстрационные: база Access не подключена или недоступна (причина — в консоли сервера).</p>{% endif %}
-  </div>
+      </div>
 </section>
 
 <section class="section">

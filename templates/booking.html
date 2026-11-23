@@ -1,39 +1,79 @@
 {% extends "base.html" %}
-{% block title %}Оформление аренды — Монтаж{% endblock %}
+{% block title %}Оформление аренды — ToolRent{% endblock %}
 {% block content %}
 <section class="page-head"><div class="wrap"><h1 class="h-xl">Оформление аренды</h1></div></section>
-<section class="wrap booking">
+<section class="wrap booking-wrap">
+{% if not lines %}
+  <div class="glass empty-big"><h3>Заявка пуста</h3><p class="muted">Добавьте инструмент из каталога: у каждой позиции можно задать своё количество и свои даты.</p>
+  <a class="btn" href="{{ url_for('catalog') }}#list">Перейти в каталог</a></div>
+{% else %}
+<form method="post" action="{{ url_for('booking') }}">
+  {{ csrf_field() }}
   <div class="glass p-card">
-    <h3>Ваша заявка</h3>
-    {% if cart_items %}
-      {% for i in cart_items %}
-      <div class="line">
-        <img src="{{ url_for('img', name=i.tool.img) }}" alt="">
-        <div><span class="brand">{{ i.tool.brand }}</span><strong>{{ i.tool.name }}</strong>
-          <small class="muted">{{ i.days }} сут. × {{ i.tool.price|rub }}</small></div>
-        <b>{{ i.sum|rub }}</b>
-      </div>
+    <h3>Позиции заявки</h3>
+    <p class="muted">Одна заявка может содержать несколько позиций с разными датами. Один и тот же инструмент можно добавить с разными сроками отдельными позициями.</p>
+    <div class="table-wrap"><table class="tbl">
+      <thead><tr><th>Инструмент</th><th>Кол-во</th><th>Начало</th><th>Окончание</th><th>Суток</th><th>Аренда</th><th></th></tr></thead>
+      <tbody>
+      {% for l in lines %}
+      <tr>
+        <td><span class="brand">{{ l.tool.brand }}</span><a href="{{ url_for('tool', tool_id=l.tool.id) }}"><strong>{{ l.tool.name }}</strong></a>
+          {% if l.qty > l.free %}<br><small class="bad-text">На эти даты свободно только {{ l.free }} шт.</small>{% else %}<br><small class="muted">Свободно на эти даты: {{ l.free }} шт.</small>{% endif %}</td>
+        <td><input class="n-in" type="number" name="qty-{{ l.k }}" value="{{ l.qty }}" min="1" max="9999"></td>
+        <td><input type="date" name="start-{{ l.k }}" value="{{ l.start|iso }}" min="{{ today_iso }}"></td>
+        <td><input type="date" name="end-{{ l.k }}" value="{{ l.end|iso }}" min="{{ today_iso }}"></td>
+        <td>{{ l.days }}</td>
+        <td><b>{{ l.rent|rub }}</b><br><small class="muted">залог {{ l.deposit|rub }}</small></td>
+        <td><button class="icon-btn" formaction="{{ url_for('cart_remove', k=l.k) }}" aria-label="Убрать позицию">✕</button></td>
+      </tr>
       {% endfor %}
-      <div class="sum"><span>Аренда</span><b>{{ cart_rent|rub }}</b></div>
-      <div class="sum"><span>Залог</span><b>{{ cart_deposit|rub }}</b></div>
-    {% else %}
-      <div class="empty"><p class="muted">Заявка пуста. Добавьте инструмент из каталога.</p>
-      <a class="btn btn-ghost" href="{{ url_for('catalog') }}#list">Перейти в каталог</a></div>
-    {% endif %}
+      </tbody>
+    </table></div>
   </div>
-  <form class="glass p-card" method="post">
-    <h3>Даты и получение</h3>
-    <div class="two">
-      <label class="field">Дата начала<input type="date" name="start" required></label>
-      <label class="field">Дата окончания<input type="date" name="end" required></label>
+
+  <div class="booking">
+    <div class="glass p-card">
+      <h3>Получение и скидки</h3>
+      <fieldset class="dur dur-2">
+        <legend>Способ получения</legend>
+        <span><input type="radio" name="delivery" id="dv1" value="Самовывоз" {{ 'checked' if delivery != 'Доставка' }}><label for="dv1"><b>Самовывоз</b><small>со склада</small></label></span>
+        <span><input type="radio" name="delivery" id="dv2" value="Доставка" {{ 'checked' if delivery == 'Доставка' }}><label for="dv2"><b>Доставка</b><small>на адрес или объект</small></label></span>
+      </fieldset>
+      {% if me %}
+        <label class="field">Купон
+          <select name="coupon">
+            <option value="0">Без купона</option>
+            {% for c in coupons %}<option value="{{ c.uc }}" {{ 'selected' if c.uc == uc }} {{ 'disabled' if not c.ok }}>
+              {{ c.coupon.name }} — {{ (c.coupon.amount|string|replace('.00','')) ~ ('%' if c.coupon.disc_type == 'Процент' else ' ₽') }}{% if not c.ok %} ({{ c.why }}){% endif %}</option>{% endfor %}
+          </select>
+        </label>
+        {% if point_rate and me.points %}
+        <label class="field">Списать баллов (на балансе {{ me.points }}; 1 балл = {{ point_rate|rub }})
+          <input type="number" name="points" min="0" max="{{ me.points }}" value="{{ points }}">
+        </label>
+        {% endif %}
+      {% endif %}
     </div>
-    <fieldset class="dur dur-2">
-      <legend>Способ получения</legend>
-      <span><input type="radio" name="delivery" id="dv1" value="pickup" checked><label for="dv1"><b>Самовывоз</b><small>со склада</small></label></span>
-      <span><input type="radio" name="delivery" id="dv2" value="delivery"><label for="dv2"><b>Доставка</b><small>на адрес или объект</small></label></span>
-    </fieldset>
-    <label class="field">Комментарий<textarea name="comment" rows="3"></textarea></label>
-    <button class="btn btn-lg btn-block" {{ 'disabled' if not cart_items }}>Отправить заявку</button>
-  </form>
+
+    <div class="glass p-card">
+      <h3>Итого</h3>
+      <div class="sum"><span>Аренда до скидок</span><b>{{ subtotal|rub }}</b></div>
+      {% if disc_c %}<div class="sum"><span>Скидка по купону</span><b>−{{ disc_c|rub }}</b></div>{% endif %}
+      {% if disc_p %}<div class="sum"><span>Оплата баллами ({{ points }})</span><b>−{{ disc_p|rub }}</b></div>{% endif %}
+      <div class="sum total"><span>Аренда к оплате</span><b>{{ total|rub }}</b></div>
+      <div class="sum"><span>Залог (возвращается)</span><b>{{ deposit|rub }}</b></div>
+      <p class="muted"><small>Администратор рассматривает каждую позицию отдельно. Сумма пересчитывается, если часть позиций будет отклонена.</small></p>
+      <div class="row">
+        <button class="btn btn-ghost" name="action" value="update">Пересчитать</button>
+        {% if not me %}<a class="btn" href="{{ url_for('login', next=url_for('booking')) }}">Войти, чтобы отправить</a>
+        {% else %}<button class="btn" name="action" value="submit" {{ 'disabled' if has_problem or not me.email_ok }}>Отправить заявку</button>{% endif %}
+      </div>
+      {% if has_problem %}<small class="bad-text">Уменьшите количество или измените даты в проблемных позициях.</small>{% endif %}
+      {% if me and not me.email_ok %}<small class="bad-text">Подтвердите почту, чтобы отправить заявку.</small>{% endif %}
+    </div>
+  </div>
+</form>
+<form method="post" action="{{ url_for('cart_clear') }}" class="center">{{ csrf_field() }}<input type="hidden" name="next" value="/booking"><button class="link-btn">Очистить заявку</button></form>
+{% endif %}
 </section>
 {% endblock %}

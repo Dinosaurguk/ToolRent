@@ -1,19 +1,22 @@
 {% extends "base.html" %}
-{% block title %}Регистрация — Монтаж{% endblock %}
+{% block title %}Регистрация — ToolRent{% endblock %}
 {% block content %}
 <section class="auth"><div class="glow g2"></div>
   <form class="glass auth-card auth-wide" method="post">
+    {{ csrf_field() }}
     <h1 class="h-lg">Регистрация</h1>
-    <p class="muted">Поля соответствуют таблице «Пользователь». Пока данные не сохраняются.</p>
+    <p class="muted">Один аккаунт для заказов, баллов и купонов. Бизнес-профиль можно подключить позже в личном кабинете.</p>
     <div class="two">
-      <label class="field">ФИО<input name="fio" required></label>
-      <label class="field">Телефон<input type="tel" name="phone" required></label>
-      <label class="field">Email<input type="email" name="email" required></label>
-      <label class="field">Адрес<input name="address"></label>
-      <label class="field">Логин<input name="login" autocomplete="username" required></label>
+      <label class="field">ФИО<input name="fio" value="{{ form.get('fio', '') }}" required></label>
+      <label class="field">Телефон<input type="tel" name="phone" value="{{ form.get('phone', '') }}" placeholder="+7 900 000-00-00"></label>
+      <label class="field">Email<input type="email" name="email" value="{{ form.get('email', '') }}" required></label>
+      <label class="field">Адрес<input name="address" value="{{ form.get('address', '') }}"></label>
+      <label class="field">Логин<input name="login" autocomplete="username" value="{{ form.get('login', '') }}" required></label>
+      <span></span>
       <label class="field">Пароль<input type="password" name="password" autocomplete="new-password" required></label>
+      <label class="field">Повторите пароль<input type="password" name="password2" autocomplete="new-password" required></label>
     </div>
-    <label class="check"><input type="checkbox" name="is_company" value="1"><span>Я представляю организацию (реквизиты добавим на следующем этапе)</span></label>
+    <small class="muted">Логин: латинские буквы, цифры, точка, дефис, подчёркивание. Пароль: от 8 символов, буквы и цифры. После регистрации нужно подтвердить почту по ссылке из письма.</small>
     <button class="btn btn-block btn-lg">Создать аккаунт</button>
     <p class="muted center">Уже есть аккаунт? <a class="link" href="{{ url_for('login') }}">Войти</a></p>
   </form>

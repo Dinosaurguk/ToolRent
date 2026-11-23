@@ -1,34 +1,160 @@
 {% extends "base.html" %}
-{% block title %}Личный кабинет — Монтаж{% endblock %}
+{% import "base.html" as b with context %}
+{% block title %}Личный кабинет — ToolRent{% endblock %}
 {% block content %}
 <section class="page-head"><div class="wrap">
   <h1 class="h-xl">Личный кабинет</h1>
-  <p class="muted demo-note">Макет: вход ещё не реализован, ниже — демонстрационное содержимое.</p>
 </div></section>
-<section class="wrap profile">
-  <div class="glass p-card">
-    <div class="avatar">ИИ</div>
-    <h3>Иван Иванов <span class="demo">демо</span></h3>
-    <dl class="kv">
-      <dt>Телефон</dt><dd>+7 000 000-00-00</dd>
-      <dt>Email</dt><dd>demo@example.com</dd>
-      <dt>Роль</dt><dd>{{ 'Бизнес-клиент' if mode == 'b2b' else 'Частный клиент' }}</dd>
-    </dl>
-    <a class="btn btn-ghost btn-block" href="{{ url_for('login') }}">Войти в другой аккаунт</a>
-  </div>
-  <div class="p-main">
-    <div class="glass p-card">
-      <h3>Мои аренды</h3>
-      <div class="empty"><p class="muted">Здесь появится список броней со статусами из таблицы «Бронирование».</p>
-      <a class="btn btn-ghost" href="{{ url_for('catalog') }}#list">Выбрать инструмент</a></div>
+
+<section class="wrap account">
+  <nav class="side glass" aria-label="Разделы кабинета">
+    {% for key, label in sections %}
+      {% if key != 'business' or not is_admin %}
+      <a class="{{ 'on' if section == key or (section == 'order' and key == 'orders') }}" href="{{ url_for('profile', section=key) }}">{{ label }}
+        {% if key == 'messages' and unread %}<span class="acc-val">{{ unread }}</span>{% endif %}
+        {% if key == 'points' %}<span class="acc-val">{{ me.points }}</span>{% endif %}</a>
+      {% endif %}
+    {% endfor %}
+    {% if is_admin %}<a href="{{ url_for('admin_home') }}">Админ-панель</a>{% endif %}
+  </nav>
+
+  <div class="acc-main">
+  {% if section == 'overview' %}
+    <div class="stats stats-4">
+      <a class="glass stat stat-link" href="{{ url_for('profile', section='points') }}"><b>{{ me.points }}</b><span>бонусных баллов</span></a>
+      <a class="glass stat stat-link" href="{{ url_for('profile', section='coupons') }}"><b>{{ n_coupons }}</b><span>доступных купонов</span></a>
+      <a class="glass stat stat-link" href="{{ url_for('profile', section='orders') }}"><b>{{ stats.orders }}</b><span>заявок, завершено {{ stats.done }}</span></a>
+      <div class="glass stat"><b class="sm">{{ stats.benefit|rub }}</b><span>оценочная выгода от аренды</span></div>
     </div>
-    {% if mode == 'b2b' %}
-    <div class="glass p-card">
-      <h3>Организация</h3>
-      <p class="muted">Реквизиты компании (таблица «B2B_Реквизиты»), сотрудники и объекты строительства.</p>
-      <a class="btn btn-ghost" href="{{ url_for('b2b') }}">Кабинет компании</a>
-    </div>
+    <p class="muted"><small>«Оценочная выгода от аренды» — условный расчёт по завершённым арендам (аренда на {{ stats.rent_total|rub }}), а не подтверждённая рыночная экономия.</small></p>
+
+    <form class="glass p-card" method="post" action="{{ url_for('profile_data') }}">
+      {{ csrf_field() }}
+      <h3>Личные данные</h3>
+      <div class="two">
+        <label class="field">ФИО<input name="fio" value="{{ me.fio }}" required></label>
+        <label class="field">Логин<input value="{{ me.login }}" disabled></label>
+        <label class="field">Email<input type="email" name="email" value="{{ me.email }}" required></label>
+        <label class="field">Телефон<input type="tel" name="phone" value="{{ me.phone or '' }}"></label>
+      </div>
+      <label class="field">Адрес<input name="address" value="{{ me.address or '' }}"></label>
+      <p class="muted"><small>Статус почты: {% if me.email_ok %}<span class="pill s-ok">подтверждена</span>{% else %}<span class="pill s-wait">не подтверждена</span>{% endif %}
+        · В системе с {{ me.reg_date|d }}. При смене email его нужно подтвердить заново.</small></p>
+      <div class="row"><button class="btn">Сохранить</button></div>
+    </form>
+    {% if not me.email_ok %}
+    <form class="glass p-card" method="post" action="{{ url_for('verify_resend') }}">{{ csrf_field() }}
+      <h3>Подтверждение почты</h3>
+      <p class="muted">Без подтверждённой почты отправить заявку нельзя.{% if not mail_enabled %} Отправка писем на сервере не настроена: подтвердить адрес может администратор.{% endif %}</p>
+      <div class="row"><button class="btn btn-ghost">Отправить письмо повторно</button></div>
+    </form>
     {% endif %}
+    {% if recent %}
+    <div class="glass p-card"><h3>Последние заявки</h3>
+      {% for o in recent %}<a class="orow" href="{{ url_for('profile_order', rid=o.id_rent) }}"><b>№{{ o.id_rent }}</b><span>{{ o.created|d }}</span>{{ b.pill(o.status) }}<b>{{ o.rent_sum|rub }}</b></a>{% endfor %}
+    </div>{% endif %}
+
+  {% elif section == 'orders' %}
+    <div class="glass p-card"><h3>История аренд</h3>
+    {% if orders %}<div class="table-wrap"><table class="tbl"><thead><tr><th>№</th><th>Дата</th><th>Позиций</th><th>Статус</th><th>Аренда</th><th>Залог</th></tr></thead><tbody>
+      {% for o in orders %}<tr><td><a class="link" href="{{ url_for('profile_order', rid=o.id_rent) }}">№{{ o.id_rent }}</a></td><td>{{ o.created|d }}</td><td>{{ o.n_items }}</td><td>{{ b.pill(o.status) }}</td><td>{{ o.rent_sum|rub }}</td><td>{{ o.deposit_sum|rub }}</td></tr>{% endfor %}
+    </tbody></table></div>
+    {% else %}<div class="empty"><p class="muted">Заявок пока нет.</p><a class="btn btn-ghost" href="{{ url_for('catalog') }}#list">Выбрать инструмент</a></div>{% endif %}</div>
+
+  {% elif section == 'order' %}
+    <div class="glass p-card">
+      <div class="row between"><h3>Заявка №{{ order.id_rent }}</h3>{{ b.pill(order.status) }}</div>
+      <p class="muted">Создана {{ order.created|dt }} · {{ order.delivery }}</p>
+      <div class="acc-list">
+      {% for p in positions %}
+        <details class="pos" {{ 'open' if loop.length == 1 }}>
+          <summary><span><b>{{ p.tool.name if p.tool else 'Инструмент №' ~ p.id_tool }}</b> × {{ p.qty }}</span><span class="muted">{{ p.start|d }}–{{ p.end|d }}</span>{{ b.pill(p.status) }}</summary>
+          <div class="pos-body">
+            <div class="sum"><span>{{ p.qty }} шт. × {{ p.price_at|rub }} × {{ p.days }} сут.</span><b>{{ p.sum|rub }}</b></div>
+            {% if p.reason %}<p class="bad-text">Причина отказа: {{ p.reason }}</p>{% endif %}
+            <ul class="tl">{% for h in p.history %}<li><b>{{ h.new_status }}</b> <span class="muted">{{ h.at|dt }}</span>{% if h.comment and h.new_status != 'На рассмотрении' %}<br><small>{{ h.comment }}</small>{% endif %}</li>{% endfor %}</ul>
+          </div>
+        </details>
+      {% endfor %}
+      </div>
+      <div class="sum"><span>Аренда до скидок</span><b>{{ order.sum_before|rub }}</b></div>
+      {% if order.discount %}<div class="sum"><span>Скидки</span><b>−{{ order.discount|rub }}</b></div>{% endif %}
+      <div class="sum total"><span>Аренда</span><b>{{ order.rent_sum|rub }}</b></div>
+      <div class="sum"><span>Залог</span><b>{{ order.deposit_sum|rub }}</b></div>
+      <h3>Статусы заявки</h3>
+      <ul class="tl">{% for h in history %}<li><b>{{ h.new_status }}</b> <span class="muted">{{ h.at|dt }}</span>{% if h.comment %}<br><small>{{ h.comment }}</small>{% endif %}</li>{% endfor %}</ul>
+      {% if can_cancel %}<form method="post" action="{{ url_for('profile_order_cancel', rid=order.id_rent) }}">{{ csrf_field() }}<button class="btn btn-ghost">Отменить заявку</button></form>{% endif %}
+    </div>
+
+  {% elif section == 'points' %}
+    <div class="glass p-card">
+      <h3>Бонусные баллы</h3>
+      <div class="price-xl">{{ me.points }}</div>
+      <p class="muted">Начисляем {{ points_percent }}% от стоимости аренды (залог не входит) после того, как все позиции заявки возвращены и возврат подтверждён.
+        {% if point_rate %}При оформлении заявки 1 балл даёт скидку {{ point_rate|rub }}.{% endif %}</p>
+    </div>
+    <div class="glass p-card"><h3>История начислений и списаний</h3>
+    {% if ops %}<div class="table-wrap"><table class="tbl"><thead><tr><th>Дата</th><th>Операция</th><th>Баллы</th><th>Комментарий</th></tr></thead><tbody>
+      {% for o in ops %}<tr><td>{{ o.dt|dt }}</td><td>{{ o.op_type }}</td><td><b class="{{ 'ok-text' if o.delta > 0 else 'bad-text' }}">{{ '%+d'|format(o.delta) }}</b></td><td>{{ o.comment or '' }}{% if o.id_rent %} <a class="link" href="{{ url_for('profile_order', rid=o.id_rent) }}">№{{ o.id_rent }}</a>{% endif %}</td></tr>{% endfor %}
+    </tbody></table></div>{% else %}<p class="muted">Операций пока нет.</p>{% endif %}</div>
+
+  {% elif section == 'coupons' %}
+    <div class="glass p-card"><h3>Купоны</h3>
+    {% if coupons %}<div class="grid grid-2">
+      {% for c in coupons %}<div class="glass coupon {{ 'dead' if c.state != 'Доступен' }}">
+        <b class="price">{{ (c.c.amount|string|replace('.00','')) ~ ('%' if c.c.disc_type == 'Процент' else ' ₽') }}</b>
+        <strong>{{ c.c.name }}</strong>
+        {% if c.c.descr %}<small class="muted prewrap">{{ c.c.descr }}</small>{% endif %}
+        <small class="muted">Код {{ c.c.code }}{% if c.end %} · до {{ c.end|d }}{% endif %}{% if c.c.min_sum and c.c.min_sum > 0 %} · от {{ c.c.min_sum|rub }}{% endif %}</small>
+        <span class="pill {{ 's-ok' if c.state == 'Доступен' else 's-off' }}">{{ c.state }}</span></div>{% endfor %}
+    </div><p class="muted"><small>Купон выбирается на странице оформления заявки и привязывается к заказу.</small></p>
+    {% else %}<p class="muted">Купонов пока нет.</p>{% endif %}</div>
+
+  {% elif section == 'messages' %}
+    <div class="glass p-card"><div class="row between"><h3>Сообщения и уведомления</h3>
+      {% if unread %}<form method="post" action="{{ url_for('messages_read') }}">{{ csrf_field() }}<button class="btn btn-sm btn-ghost">Отметить прочитанными</button></form>{% endif %}</div>
+    {% for m in msgs %}<div class="msg {{ 'unread' if not m.is_read }}"><div class="row between"><b>{{ m.title }}</b><small class="muted">{{ m.created|dt }}</small></div>
+      <p class="prewrap">{{ m.body }}</p>{% if m.id_rent %}<a class="link" href="{{ url_for('profile_order', rid=m.id_rent) }}">Заявка №{{ m.id_rent }}</a>{% endif %}</div>
+    {% else %}<p class="muted">Сообщений пока нет.</p>{% endfor %}</div>
+
+  {% elif section == 'activity' %}
+    <div class="glass p-card"><h3>Карта активности за год</h3>
+      <p class="muted">Событий: {{ act.total }}, активных дней: {{ act.active_days }}. Оттенок показывает число событий за день, красная рамка — отказы, пунктир — позиции, ожидающие решения.</p>
+      <div class="table-wrap"><div class="cal">{% for col in act.weeks %}{% for c in col %}<i class="cell lv{{ c.level }}{{ ' rej' if c.rej }}{{ ' pend' if c.pend }}{{ ' fut' if c.future }}" title="{{ c.title }}"></i>{% endfor %}{% endfor %}</div></div>
+      <div class="legend"><span>Меньше</span>{% for i in range(5) %}<i class="cell lv{{ i }}"></i>{% endfor %}<span>Больше</span><i class="cell lv2 rej"></i><span>отказ</span><i class="cell lv2 pend"></i><span>ожидает</span></div>
+    </div>
+    <div class="glass p-card"><h3>Последние события</h3>
+    {% for d, k, t in act.events %}<div class="orow"><span class="muted">{{ d|dt }}</span><span>{{ t }}</span><span class="pill {{ 's-bad' if k == 'rejected' else 's-wait' if k == 'pending' else 's-ok' }}">{{ kinds[k] }}</span></div>
+    {% else %}<p class="muted">Событий пока нет.</p>{% endfor %}</div>
+
+  {% elif section == 'password' %}
+    <form class="glass p-card" method="post" action="{{ url_for('profile_password') }}">{{ csrf_field() }}
+      <h3>Изменение пароля</h3>
+      <label class="field">Текущий пароль<input type="password" name="current" autocomplete="current-password" required></label>
+      <div class="two"><label class="field">Новый пароль<input type="password" name="password" autocomplete="new-password" required></label>
+      <label class="field">Повторите пароль<input type="password" name="password2" autocomplete="new-password" required></label></div>
+      <small class="muted">От 8 символов, буквы и цифры.</small>
+      <div class="row"><button class="btn">Изменить пароль</button></div>
+    </form>
+
+  {% elif section == 'business' %}
+    {% if is_admin %}<div class="glass p-card"><p class="muted">Администратору бизнес-профиль не требуется.</p></div>
+    {% else %}
+    <form class="glass p-card" method="post" action="{{ url_for('business_save') }}">{{ csrf_field() }}
+      <h3>{{ 'Реквизиты организации' if org else 'Подключение бизнес-профиля' }}</h3>
+      <p class="muted">{% if org %}Бизнес-профиль подключён. Реквизиты можно изменить.{% else %}Укажите реквизиты организации. Аккаунт останется прежним: история заказов, баллы, купоны и личные данные сохранятся, а роль станет «бизнес-клиент».{% endif %}</p>
+      <div class="two">
+        <label class="field">Тип организации
+          <select name="org_type" required>{% for o in org_types %}<option {{ 'selected' if org and org.org_type == o }}>{{ o }}</option>{% endfor %}</select></label>
+        <label class="field">Название компании<input name="company" value="{{ org.company if org else '' }}" required></label>
+        <label class="field">ИНН<input name="inn" inputmode="numeric" value="{{ org.inn if org else '' }}" required></label>
+        <label class="field">КПП (обязателен для ООО, АО, ПАО)<input name="kpp" inputmode="numeric" value="{{ (org.kpp or '') if org else '' }}"></label>
+      </div>
+      <label class="field">Юридический адрес<input name="legal_address" value="{{ org.legal_address if org else '' }}" required></label>
+      <div class="row"><button class="btn">{{ 'Сохранить реквизиты' if org else 'Подключить бизнес-профиль' }}</button></div>
+    </form>
+    {% endif %}
+  {% endif %}
   </div>
 </section>
 {% endblock %}

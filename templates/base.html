@@ -1,4 +1,6 @@
 {# Макет карточки инструмента. Подключение в других шаблонах: {% import "base.html" as b with context %} #}
+{# Цветная метка статуса #}
+{% macro pill(s) %}<span class="pill s-{{ {'На рассмотрении':'wait','В обработке':'wait','Одобрена':'ok','Выдана':'go','В аренде':'go','Возвращена':'done','Завершена':'done','Отклонена':'bad','Отменена':'off'}.get(s, 'off') }}">{{ s }}</span>{% endmacro %}
 {% macro card(t) %}
 <article class="card">
   <a class="card-img" href="{{ url_for('tool', tool_id=t.id) }}">
@@ -14,10 +16,11 @@
     <div class="card-foot">
       <span class="stock {{ 'ok' if t.qty > 3 else ('low' if t.qty > 0 else 'out') }}">Доступно: {{ t.qty }} шт.</span>
       <form method="post" action="{{ url_for('cart_add') }}">
+        {{ csrf_field() }}
         <input type="hidden" name="tool_id" value="{{ t.id }}">
         <input type="hidden" name="days" value="1">
         <input type="hidden" name="next" value="{{ current }}">
-        <button class="btn btn-sm" {{ 'disabled' if t.qty == 0 }}>В заявку</button>
+        <button class="btn btn-sm" {{ 'disabled' if t.stock == 0 }}>В заявку</button>
       </form>
     </div>
   </div>
@@ -28,19 +31,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Монтаж — аренда строительного инструмента{% endblock %}</title>
+  <meta name="description" content="ToolRent — аренда строительного инструмента для частных клиентов и строительных компаний.">
+  <title>{% block title %}ToolRent — аренда строительного инструмента{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('css') }}">
 </head>
 <body class="mode-{{ mode }}">
 
 <header class="topbar">
   <div class="wrap topbar-in">
-    <a class="logo" href="{{ url_for('index') }}"><span class="logo-mark"></span>Монтаж</a>
+    <a class="logo" href="{{ url_for('index') }}"><span class="logo-mark"></span>ToolRent</a>
 
     <nav class="nav">
       <a href="{{ url_for('catalog') }}">Каталог</a>
       <a href="{{ url_for('b2b') }}">Для бизнеса</a>
       <a href="{{ url_for('booking') }}">Оформление</a>
+      {% if is_admin %}<a href="{{ url_for('admin_home') }}">Админ-панель</a>{% endif %}
     </nav>
 
     <form class="search" action="{{ url_for('catalog') }}" method="get" role="search">
@@ -57,11 +62,47 @@
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7h12l-1 12H7L6 7z"/><path d="M9 7V6a3 3 0 016 0v1"/></svg>
       {% if cart_count %}<span class="badge">{{ cart_count }}</span>{% endif %}
     </a>
-    <a class="icon-btn" href="{{ url_for('profile') }}" aria-label="Личный кабинет">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg>
-    </a>
+
+    {# Панель аккаунта: на компьютере открывается наведением, на телефоне — нажатием (чекбокс без JavaScript) #}
+    <div class="acc">
+      <input type="checkbox" id="acc-toggle" class="acc-check" aria-hidden="true" tabindex="-1">
+      <a class="icon-btn acc-link" href="{{ url_for('profile') if me else url_for('login') }}" aria-label="{{ 'Личный кабинет' if me else 'Войти' }}">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg>
+        {% if unread %}<span class="badge">{{ unread }}</span>{% endif %}
+      </a>
+      <label class="icon-btn acc-tap" for="acc-toggle" aria-label="Меню аккаунта">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg>
+        {% if unread %}<span class="badge">{{ unread }}</span>{% endif %}
+      </label>
+      <div class="acc-panel">
+        <div class="acc-card">
+          {% if me %}
+          <div class="acc-head"><strong>{{ me.fio }}</strong><small class="muted">{{ 'Администратор' if is_admin else ('Бизнес-клиент' if is_b2b else 'Частный клиент') }}</small></div>
+          <a href="{{ url_for('profile') }}">Личный кабинет</a>
+          <a href="{{ url_for('profile', section='points') }}">Баллы <span class="acc-val">{{ me.points }}</span></a>
+          <a href="{{ url_for('profile', section='coupons') }}">Купоны</a>
+          <a href="{{ url_for('profile', section='messages') }}">Сообщения и уведомления {% if unread %}<span class="acc-val">{{ unread }}</span>{% endif %}</a>
+          <a href="{{ url_for('profile', section='activity') }}">Карта активности</a>
+          {% if is_b2b %}<a href="{{ url_for('profile', section='business') }}">Бизнес-раздел</a>{% endif %}
+          {% if is_admin %}<a href="{{ url_for('admin_home') }}">Админ-панель</a>{% endif %}
+          <form method="post" action="{{ url_for('logout') }}">{{ csrf_field() }}<button class="acc-out">Выйти</button></form>
+          {% else %}
+          <div class="acc-head"><strong>Добро пожаловать</strong><small class="muted">Войдите, чтобы оформлять заявки</small></div>
+          <a href="{{ url_for('login') }}">Войти</a>
+          <a href="{{ url_for('register') }}">Регистрация</a>
+          {% endif %}
+        </div>
+      </div>
+    </div>
   </div>
 </header>
+
+{% if me and not me.email_ok and not is_admin %}
+<div class="notice"><div class="wrap notice-in">
+  <span>Почта <b>{{ me.email }}</b> не подтверждена: заявки отправлять пока нельзя.</span>
+  <form method="post" action="{{ url_for('verify_resend') }}">{{ csrf_field() }}<input type="hidden" name="next" value="{{ current }}"><button class="btn btn-sm btn-ghost">Отправить письмо ещё раз</button></form>
+</div></div>
+{% endif %}
 
 {% with msgs = get_flashed_messages() %}{% if msgs %}
 <div class="toasts">{% for m in msgs %}<div class="toast">{{ m }}</div>{% endfor %}</div>
@@ -71,13 +112,12 @@
 
 <footer class="footer">
   <div class="wrap footer-in">
-    <div><a class="logo" href="{{ url_for('index') }}"><span class="logo-mark"></span>Монтаж</a>
-      <p class="muted">Учебный проект. Название, контакты и цены — временные.</p></div>
+    <div><a class="logo" href="{{ url_for('index') }}"><span class="logo-mark"></span>ToolRent</a>
+      <p class="muted">ToolRent — аренда строительного инструмента.</p></div>
     <div class="footer-links">
       <a href="{{ url_for('catalog') }}">Каталог</a>
       <a href="{{ url_for('b2b') }}">Для бизнеса</a>
-      <a href="{{ url_for('login') }}">Войти</a>
-      <a href="{{ url_for('register') }}">Регистрация</a>
+      {% if me %}<a href="{{ url_for('profile') }}">Личный кабинет</a>{% else %}<a href="{{ url_for('login') }}">Войти</a><a href="{{ url_for('register') }}">Регистрация</a>{% endif %}
     </div>
   </div>
 </footer>
@@ -91,17 +131,17 @@
       <a class="icon-btn" href="#close" aria-label="Закрыть">✕</a>
     </div>
     <div class="drawer-body">
-      {% if cart_items %}
-        {% for i in cart_items %}
+      {% if cart_lines %}
+        {% for l in cart_lines %}
         <div class="line">
-          <img src="{{ url_for('img', name=i.tool.img) }}" alt="">
+          <img src="{{ url_for('img', name=l.tool.img) }}" alt="">
           <div>
-            <span class="brand">{{ i.tool.brand }}</span>
-            <strong>{{ i.tool.name }}</strong>
-            <small class="muted">{{ i.days }} сут. × {{ i.tool.price|rub }} = {{ i.sum|rub }}</small>
+            <span class="brand">{{ l.tool.brand }}</span>
+            <strong>{{ l.tool.name }}</strong>
+            <small class="muted">{{ l.qty }} шт. · {{ l.start|d }}–{{ l.end|d }} ({{ l.days }} сут.)<br>{{ l.rent|rub }}</small>
           </div>
-          <form method="post" action="{{ url_for('cart_remove', tool_id=i.tool.id) }}">
-            <input type="hidden" name="next" value="{{ current }}">
+          <form method="post" action="{{ url_for('cart_remove', k=l.k) }}">
+            {{ csrf_field() }}<input type="hidden" name="next" value="{{ current }}">
             <button class="icon-btn" aria-label="Убрать">✕</button>
           </form>
         </div>
@@ -114,12 +154,12 @@
         </div>
       {% endif %}
     </div>
-    {% if cart_items %}
+    {% if cart_lines %}
     <div class="drawer-foot">
       <div class="sum"><span>Аренда</span><b>{{ cart_rent|rub }}</b></div>
       <div class="sum"><span>Залог</span><b>{{ cart_deposit|rub }}</b></div>
       <a class="btn btn-block" href="{{ url_for('booking') }}">Перейти к оформлению</a>
-      <form method="post" action="{{ url_for('cart_clear') }}"><input type="hidden" name="next" value="{{ current }}"><button class="link-btn">Очистить заявку</button></form>
+      <form method="post" action="{{ url_for('cart_clear') }}">{{ csrf_field() }}<input type="hidden" name="next" value="{{ current }}"><button class="link-btn">Очистить заявку</button></form>
     </div>
     {% endif %}
   </div>

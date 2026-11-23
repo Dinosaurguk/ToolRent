@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Восстановление пароля — ToolRent{% endblock %}
+{% block content %}
+<section class="auth"><div class="glow g1"></div>
+  {% if token %}
+  <form class="glass auth-card" method="post">
+    {{ csrf_field() }}
+    <h1 class="h-lg">Новый пароль</h1>
+    <label class="field">Новый пароль<input type="password" name="password" autocomplete="new-password" required autofocus></label>
+    <label class="field">Повторите пароль<input type="password" name="password2" autocomplete="new-password" required></label>
+    <small class="muted">От 8 символов, буквы и цифры.</small>
+    <button class="btn btn-block btn-lg">Сохранить пароль</button>
+  </form>
+  {% else %}
+  <form class="glass auth-card" method="post">
+    {{ csrf_field() }}
+    <h1 class="h-lg">Восстановление пароля</h1>
+    <p class="muted">Укажите email аккаунта, и мы отправим ссылку для создания нового пароля.</p>
+    <label class="field">Email<input type="email" name="email" required autofocus></label>
+    <button class="btn btn-block btn-lg">Отправить ссылку</button>
+    {% if not mail_enabled %}<small class="muted">Отправка почты на сервере не настроена: восстановить доступ может администратор.</small>{% endif %}
+    <p class="muted center"><a class="link" href="{{ url_for('login') }}">Вернуться ко входу</a></p>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

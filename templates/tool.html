@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% import "base.html" as b with context %}
-{% block title %}{{ t.name }} — Монтаж{% endblock %}
+{% block title %}{{ t.name }} — ToolRent{% endblock %}
 {% block content %}
 <section class="wrap crumbs muted">
   <a href="{{ url_for('catalog') }}">Каталог</a> / {% if category %}<a href="{{ url_for('catalog', cat=t.cat) }}#list">{{ category.name }}</a> / {% endif %}{{ t.brand }}
@@ -15,12 +15,17 @@
     {% if t.desc %}<div class="lead muted prewrap">{{ t.desc }}</div>{% endif %}
 
     <form class="glass buy" method="post" action="{{ url_for('cart_add') }}">
+      {{ csrf_field() }}
       <input type="hidden" name="tool_id" value="{{ t.id }}">
       <input type="hidden" name="next" value="{{ current }}">
       <div class="buy-top">
         <div><small class="muted">Аренда в сутки</small><div class="price-xl">{{ t.price|rub }}</div></div>
         <div><small class="muted">Залог</small><div class="price-md">{{ t.deposit|rub }}</div></div>
-        <div><small class="muted">Доступно</small><div class="price-md">{{ t.qty }} шт.</div></div>
+        <div><small class="muted">Свободно сегодня</small><div class="price-md">{{ t.qty }} из {{ t.stock }} шт.</div></div>
+      </div>
+      <div class="two">
+        <label class="field">Количество<input type="number" name="qty" value="1" min="1" max="9999" required></label>
+        <label class="field">Дата начала<input type="date" name="start" value="{{ today_iso }}" min="{{ today_iso }}" required></label>
       </div>
       <fieldset class="dur">
         <legend>Срок аренды</legend>
@@ -29,7 +34,8 @@
         <label for="d{{ d }}"><b>{{ d }} сут.</b><small>{{ (t.price * d)|rub }}</small></label></span>
         {% endfor %}
       </fieldset>
-      <button class="btn btn-lg btn-block" {{ 'disabled' if t.qty == 0 }}>Добавить в заявку</button>
+      <button class="btn btn-lg btn-block" {{ 'disabled' if t.stock == 0 }}>Добавить в заявку</button>
+      <small class="muted">Свободное количество проверяется на выбранные даты при оформлении заявки.</small>
     </form>
 
     {% if t.specs %}
