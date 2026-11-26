@@ -76,5 +76,5 @@ Installation
    https://github.com/Dinosaurguk/ToolRent
 
 
-   ## License
+## License
 Этот проект распространяется под лицензией MIT. Подробнее см. в файле [LICENSE](LICENSE).
