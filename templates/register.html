@@ -4,6 +4,7 @@
 <section class="auth"><div class="glow g2"></div>
   <form class="glass auth-card auth-wide" method="post">
     {{ csrf_field() }}
+    <input type="hidden" name="next" value="{{ request.args.get('next', request.form.get('next', '')) }}">
     <h1 class="h-lg">Регистрация</h1>
     <p class="muted">Один аккаунт для заказов, баллов и купонов. Бизнес-профиль можно подключить позже в личном кабинете.</p>
     <div class="two">
@@ -16,9 +17,9 @@
       <label class="field">Пароль<input type="password" name="password" autocomplete="new-password" required></label>
       <label class="field">Повторите пароль<input type="password" name="password2" autocomplete="new-password" required></label>
     </div>
-    <small class="muted">Логин: латинские буквы, цифры, точка, дефис, подчёркивание. Пароль: от 8 символов, буквы и цифры. После регистрации нужно подтвердить почту по ссылке из письма.</small>
+    <small class="muted">Логин: латинские буквы, цифры, точка, дефис, подчёркивание. Пароль: от 8 символов, буквы и цифры. Подтверждение почты по ссылке из письма необязательно.</small>
     <button class="btn btn-block btn-lg">Создать аккаунт</button>
-    <p class="muted center">Уже есть аккаунт? <a class="link" href="{{ url_for('login') }}">Войти</a></p>
+    <p class="muted center">Уже есть аккаунт? <a class="link" href="{{ url_for('login', next=request.args.get('next', '')) }}">Войти</a></p>
   </form>
 </section>
 {% endblock %}

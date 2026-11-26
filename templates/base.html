@@ -10,7 +10,7 @@
     <span class="brand">{{ t.brand }}</span>
     <h3><a href="{{ url_for('tool', tool_id=t.id) }}">{{ t.name }}</a></h3>
     <dl class="card-meta">
-      <div><dt>Аренда в сутки</dt><dd class="price">{{ t.price|rub }}</dd></div>
+      <div><dt>Аренда в сутки</dt><dd class="price">{{ t.price|price_html }}</dd></div>
       <div><dt>Залог</dt><dd>{{ t.deposit|rub }}</dd></div>
     </dl>
     <div class="card-foot">
@@ -33,7 +33,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="ToolRent — аренда строительного инструмента для частных клиентов и строительных компаний.">
   <title>{% block title %}ToolRent — аренда строительного инструмента{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('css') }}">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='7' y='7' width='18' height='18' rx='5' transform='rotate(45 16 16)' fill='%23ffb020'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('css') }}?v={{ asset_v }}">
+  <script type="application/json" id="rent-config">{{ rent_cfg|safe }}</script>
+  <script src="{{ url_for('js') }}?v={{ asset_v }}" defer></script>
 </head>
 <body class="mode-{{ mode }}">
 
@@ -44,7 +48,6 @@
     <nav class="nav">
       <a href="{{ url_for('catalog') }}">Каталог</a>
       <a href="{{ url_for('b2b') }}">Для бизнеса</a>
-      <a href="{{ url_for('booking') }}">Оформление</a>
       {% if is_admin %}<a href="{{ url_for('admin_home') }}">Админ-панель</a>{% endif %}
     </nav>
 
@@ -55,10 +58,10 @@
 
     <div class="seg" role="group" aria-label="Тип клиента">
       <a class="{{ 'on' if mode == 'b2c' }}" href="{{ url_for('set_mode', m='b2c', next=current) }}">Частным</a>
-      <a class="{{ 'on' if mode == 'b2b' }}" href="{{ url_for('set_mode', m='b2b', next=current) }}">Бизнесу</a>
+      <a class="{{ 'on' if mode == 'b2b' }}" href="{{ url_for('set_mode', m='b2b', next=current) }}">Бизнесу{% if not is_b2b and not is_admin %}<sup class="seg-tag">демо</sup>{% endif %}</a>
     </div>
 
-    <a class="icon-btn" href="#cart" aria-label="Заявка на аренду">
+    <a class="icon-btn" href="{{ url_for('cart') }}" aria-label="Корзина: позиций {{ cart_count }}">
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7h12l-1 12H7L6 7z"/><path d="M9 7V6a3 3 0 016 0v1"/></svg>
       {% if cart_count %}<span class="badge">{{ cart_count }}</span>{% endif %}
     </a>
@@ -83,7 +86,7 @@
           <a href="{{ url_for('profile', section='coupons') }}">Купоны</a>
           <a href="{{ url_for('profile', section='messages') }}">Сообщения и уведомления {% if unread %}<span class="acc-val">{{ unread }}</span>{% endif %}</a>
           <a href="{{ url_for('profile', section='activity') }}">Карта активности</a>
-          {% if is_b2b %}<a href="{{ url_for('profile', section='business') }}">Бизнес-раздел</a>{% endif %}
+          {% if not is_admin %}<a href="{{ url_for('profile', section='business') }}">{{ 'Бизнес-раздел' if is_b2b else ('Заявка на бизнес-статус' if b2b_pending else 'Стать бизнес-клиентом') }}</a>{% endif %}
           {% if is_admin %}<a href="{{ url_for('admin_home') }}">Админ-панель</a>{% endif %}
           <form method="post" action="{{ url_for('logout') }}">{{ csrf_field() }}<button class="acc-out">Выйти</button></form>
           {% else %}
@@ -99,8 +102,25 @@
 
 {% if me and not me.email_ok and not is_admin %}
 <div class="notice"><div class="wrap notice-in">
-  <span>Почта <b>{{ me.email }}</b> не подтверждена: заявки отправлять пока нельзя.</span>
+  <span>Почта <b>{{ me.email }}</b> не подтверждена. Это необязательно: заявки можно отправлять и так, а письмо нужно только для уведомлений.</span>
   <form method="post" action="{{ url_for('verify_resend') }}">{{ csrf_field() }}<input type="hidden" name="next" value="{{ current }}"><button class="btn btn-sm btn-ghost">Отправить письмо ещё раз</button></form>
+</div></div>
+{% endif %}
+
+{# Плашка режима: подтверждённый бизнес в частном режиме, либо просмотр бизнес-режима без подтверждения #}
+{% if me and is_b2b and mode == 'b2c' %}
+<div class="notice warn"><div class="wrap notice-in">
+  <span><b>Режим для частных лиц.</b> Скидка для бизнеса {{ biz_pct }} сейчас не применяется: цены и расчёт обычные.</span>
+  <a class="btn btn-sm" href="{{ url_for('set_mode', m='b2b', next=current) }}">Вернуться в режим «Бизнесу»</a>
+</div></div>
+{% elif mode == 'b2b' and not is_b2b and not is_admin %}
+<div class="notice preview"><div class="wrap notice-in">
+  <span><b>Режим просмотра для бизнеса.</b>
+  {% if b2b_pending %}Ваша заявка на бизнес-статус ждёт подтверждения администратора. Скидка {{ biz_pct }} начнёт действовать сразу после него.
+  {% else %}Так выглядят цены для бизнес-клиентов. Скидка {{ biz_pct }} применяется только после подтверждения бизнес-статуса администратором; пока заявки считаются по обычному тарифу.{% endif %}</span>
+  {% if b2b_pending %}<a class="btn btn-sm btn-ghost" href="{{ url_for('profile', section='business') }}">Статус заявки</a>
+  {% elif me %}<a class="btn btn-sm" href="{{ url_for('profile', section='business') }}">Подать заявку</a>
+  {% else %}<a class="btn btn-sm" href="{{ url_for('register') }}">Создать аккаунт</a>{% endif %}
 </div></div>
 {% endif %}
 
@@ -110,59 +130,131 @@
 
 <main>{% block content %}{% endblock %}</main>
 
+
 <footer class="footer">
-  <div class="wrap footer-in">
-    <div><a class="logo" href="{{ url_for('index') }}"><span class="logo-mark"></span>ToolRent</a>
-      <p class="muted">ToolRent — аренда строительного инструмента.</p></div>
-    <div class="footer-links">
-      <a href="{{ url_for('catalog') }}">Каталог</a>
-      <a href="{{ url_for('b2b') }}">Для бизнеса</a>
-      {% if me %}<a href="{{ url_for('profile') }}">Личный кабинет</a>{% else %}<a href="{{ url_for('login') }}">Войти</a><a href="{{ url_for('register') }}">Регистрация</a>{% endif %}
+    <div class="wrap">
+
+        <div class="footer__grid">
+
+            <!-- О проекте -->
+            <div class="footer__brand">
+                <a class="footer__logo" href="{{ url_for('index') }}">
+                    ToolRent<span>.</span>
+                </a>
+
+                <p class="footer__description">
+                    Аренда строительного и профессионального инструмента.
+                    Подбирайте оборудование, оформляйте заявки
+                    и управляйте заказами в одном месте.
+                </p>
+            </div>
+
+            <!-- Информационные страницы -->
+            <div class="footer__links">
+                <h3 class="footer__title">Информация</h3>
+
+                <a href="{{ url_for('info_page', slug='about') }}">
+                    О нас
+                </a>
+
+                <a href="{{ url_for('info_page', slug='geography') }}">
+                    Где мы работаем
+                </a>
+
+                <a href="{{ url_for('info_page', slug='rules') }}">
+                    Правила аренды
+                </a>
+
+                <a href="{{ url_for('info_page', slug='offer') }}">
+                    Публичная оферта
+                </a>
+
+                <a href="{{ url_for('info_page', slug='privacy') }}">
+                    Конфиденциальность
+                </a>
+            </div>
+
+            <!-- Обратная связь -->
+            <div class="footer__feedback">
+                <h3 class="footer__title">
+                    Обратная связь
+                </h3>
+
+                <p class="footer__description">
+                    Нашли ошибку или хотите предложить улучшение?
+                    Напишите администратору.
+                </p>
+
+                <form
+                    class="footer__form"
+                    method="post"
+                    action="{{ url_for('send_feedback') }}"
+                >
+                    {{ csrf_field() }}
+
+                    <input
+                        type="hidden"
+                        name="next"
+                        value="{{ current }}"
+                    >
+
+                    <select name="kind" required>
+                        <option value="Ошибка">
+                            Сообщить об ошибке
+                        </option>
+                        <option value="Предложение">
+                            Предложить улучшение
+                        </option>
+                    </select>
+
+                    {% if not me %}
+                        <input
+                            type="text"
+                            name="contact"
+                            placeholder="Ваш email или телефон"
+                            maxlength="255"
+                            required
+                        >
+                    {% endif %}
+
+                    <textarea
+                        name="text"
+                        rows="3"
+                        maxlength="3000"
+                        placeholder="Опишите проблему или идею..."
+                        required
+                    ></textarea>
+
+                    <button class="btn btn-ghost" type="submit">
+                        Отправить сообщение
+                    </button>
+                </form>
+            </div>
+
+        </div>
+
+        <div class="footer__bottom">
+            <span>© ToolRent</span>
+            <span>Сервис аренды инструмента</span>
+        </div>
+
+<div class="footer__contacts">
+    <a href="tel:+00000000000">
+        <span>Телефон:</span>
+        +0 000 000-00-00
+    </a>
+
+    <a href="mailto:support.toolrent.123321@example.com">
+        <span>Email:</span>
+        support.toolrent.123321@example.com
+    </a>
+</div>
+
+
     </div>
-  </div>
 </footer>
 
-{# Боковая панель заявки: открывается CSS-селектором :target (ссылка #cart), JavaScript не нужен #}
-<aside class="drawer" id="cart" aria-label="Заявка на аренду">
-  <a class="drawer-bg" href="#close" aria-label="Закрыть панель"></a>
-  <div class="drawer-panel">
-    <div class="drawer-head">
-      <h2>Заявка на аренду</h2>
-      <a class="icon-btn" href="#close" aria-label="Закрыть">✕</a>
-    </div>
-    <div class="drawer-body">
-      {% if cart_lines %}
-        {% for l in cart_lines %}
-        <div class="line">
-          <img src="{{ url_for('img', name=l.tool.img) }}" alt="">
-          <div>
-            <span class="brand">{{ l.tool.brand }}</span>
-            <strong>{{ l.tool.name }}</strong>
-            <small class="muted">{{ l.qty }} шт. · {{ l.start|d }}–{{ l.end|d }} ({{ l.days }} сут.)<br>{{ l.rent|rub }}</small>
-          </div>
-          <form method="post" action="{{ url_for('cart_remove', k=l.k) }}">
-            {{ csrf_field() }}<input type="hidden" name="next" value="{{ current }}">
-            <button class="icon-btn" aria-label="Убрать">✕</button>
-          </form>
-        </div>
-        {% endfor %}
-      {% else %}
-        <div class="empty">
-          <p><strong>В заявке пока пусто</strong></p>
-          <p class="muted">Нажмите «В заявку» на карточке инструмента — страница останется на месте.</p>
-          <a class="btn btn-ghost" href="{{ url_for('catalog') }}#list">Перейти в каталог</a>
-        </div>
-      {% endif %}
-    </div>
-    {% if cart_lines %}
-    <div class="drawer-foot">
-      <div class="sum"><span>Аренда</span><b>{{ cart_rent|rub }}</b></div>
-      <div class="sum"><span>Залог</span><b>{{ cart_deposit|rub }}</b></div>
-      <a class="btn btn-block" href="{{ url_for('booking') }}">Перейти к оформлению</a>
-      <form method="post" action="{{ url_for('cart_clear') }}">{{ csrf_field() }}<input type="hidden" name="next" value="{{ current }}"><button class="link-btn">Очистить заявку</button></form>
-    </div>
-    {% endif %}
-  </div>
-</aside>
+
+
 </body>
 </html>

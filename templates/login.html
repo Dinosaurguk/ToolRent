@@ -6,13 +6,13 @@
     {{ csrf_field() }}
     <input type="hidden" name="next" value="{{ request.args.get('next', request.form.get('next', '')) }}">
     <h1 class="h-lg">Вход</h1>
-    <p class="muted">Откройте историю аренды, баллы и купоны.</p>
+    <p class="muted">{% if request.args.get('next') == url_for('booking') %}Чтобы оформить заявку, войдите в аккаунт. Корзина сохранена.{% else %}Откройте историю аренды, баллы и купоны.{% endif %}</p>
     <label class="field">Логин или email<input name="login" autocomplete="username" value="{{ request.form.get('login', '') }}" required autofocus></label>
     <label class="field">Пароль<input type="password" name="password" autocomplete="current-password" required></label>
     <label class="check"><input type="checkbox" name="remember" value="1" checked><span>Запомнить меня на этом устройстве</span></label>
     <button class="btn btn-block btn-lg">Войти</button>
     <p class="muted center"><a class="link" href="{{ url_for('forgot') }}">Забыли пароль?</a></p>
-    <p class="muted center">Нет аккаунта? <a class="link" href="{{ url_for('register') }}">Зарегистрироваться</a></p>
+    <p class="muted center">Нет аккаунта? <a class="link" href="{{ url_for('register', next=request.args.get('next', '')) }}">Зарегистрироваться</a></p>
   </form>
 </section>
 {% endblock %}

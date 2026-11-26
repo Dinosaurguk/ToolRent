@@ -12,36 +12,72 @@
   <div class="tool-info">
     <span class="brand">{{ t.brand }}</span>
     <h1 class="h-lg">{{ t.name }}</h1>
-    {% if t.desc %}<div class="lead muted prewrap">{{ t.desc }}</div>{% endif %}
+    <div class="price-row">
+      <div><div class="price-xl">{{ t.price|price_html }}</div><small class="muted">за сутки{% if biz_view %} · {{ 'цена для бизнеса' if biz_real else 'для бизнеса, после подтверждения' }}{% endif %}</small></div>
+      <div><div class="price-md">{{ t.deposit|rub }}</div><small class="muted">залог, вносится отдельно</small></div>
+      <div><div class="price-md">{{ t.qty }} из {{ t.stock }}</div><small class="muted">свободно сегодня</small></div>
+    </div>
 
-    <form class="glass buy" method="post" action="{{ url_for('cart_add') }}">
+    <form class="glass buy" method="post" action="{{ url_for('cart_add') }}" data-tool-form>
       {{ csrf_field() }}
       <input type="hidden" name="tool_id" value="{{ t.id }}">
       <input type="hidden" name="next" value="{{ current }}">
-      <div class="buy-top">
-        <div><small class="muted">Аренда в сутки</small><div class="price-xl">{{ t.price|rub }}</div></div>
-        <div><small class="muted">Залог</small><div class="price-md">{{ t.deposit|rub }}</div></div>
-        <div><small class="muted">Свободно сегодня</small><div class="price-md">{{ t.qty }} из {{ t.stock }} шт.</div></div>
-      </div>
-      <div class="two">
-        <label class="field">Количество<input type="number" name="qty" value="1" min="1" max="9999" required></label>
-        <label class="field">Дата начала<input type="date" name="start" value="{{ today_iso }}" min="{{ today_iso }}" required></label>
-      </div>
-      <fieldset class="dur">
-        <legend>Срок аренды</legend>
-        {% for d in durations %}
-        <span><input type="radio" name="days" id="d{{ d }}" value="{{ d }}" {{ 'checked' if loop.first }}>
-        <label for="d{{ d }}"><b>{{ d }} сут.</b><small>{{ (t.price * d)|rub }}</small></label></span>
-        {% endfor %}
-      </fieldset>
-      <button class="btn btn-lg btn-block" {{ 'disabled' if t.stock == 0 }}>Добавить в заявку</button>
-      <small class="muted">Свободное количество проверяется на выбранные даты при оформлении заявки.</small>
-    </form>
+      <div class="rent-line" data-tool-id="{{ t.id }}" data-price-k="{{ (t.price * 100)|int }}" data-deposit-k="{{ (t.deposit * 100)|int }}"
+           data-today="{{ today_iso }}" data-cart-units="{{ cart_units }}">
+        <h3>Рассчитайте аренду</h3>
+        <div class="period">
+          <label class="field">Количество<input type="number" name="qty" data-f="qty" value="1" min="1" max="9999" inputmode="numeric" required></label>
+          <label class="field">Начало аренды<input type="date" name="start" data-f="start" value="{{ today_iso }}" min="{{ today_iso }}" required></label>
+          <label class="field">Срок, суток<input type="number" name="days" data-f="days" value="1" min="1" max="365" inputmode="numeric"></label>
+          <label class="field">Окончание<input type="date" name="end" data-f="end" value="{{ today_iso }}" min="{{ today_iso }}" required></label>
+        </div>
+        <div class="presets">{% for d in durations %}<button type="button" class="chip-btn {{ 'on' if d == 1 }}" data-set-days="{{ d }}">{{ d }} сут.</button>{% endfor %}</div>
+        <div class="avail" data-o="avail">Проверяем доступность…</div>
+        <button type="button" class="chip-btn" data-fix-qty="0" hidden>Выбрать 0 шт.</button>
 
-    {% if t.specs %}
-    <h2 class="h-md">Характеристики</h2>
-    <div class="specs-text prewrap">{{ t.specs }}</div>
-    {% endif %}
+        <div class="ci-sum">
+          <div class="sum"><span>Аренда <small class="muted" data-o="days-label">1 сутки</small></span><b data-o="base">{{ t.price|rub }}</b></div>
+          <div class="sum" data-row="dur" hidden><span>Скидка</span><b data-o="dur">−0 ₽</b></div>
+          <div class="sum total"><span>Стоимость аренды</span><b data-o="rent">{{ t.price|rub }}</b></div>
+          <div class="sum"><span>Залог</span><b data-o="deposit">{{ t.deposit|rub }}</b></div>
+          <div class="sum grand"><span>Всего с залогом</span><b data-o="total">{{ (t.price + t.deposit)|rub }}</b></div>
+        </div>
+        <p class="muted" data-o="qty-hint" hidden><small>Вместе с позициями из корзины в заявке будет не меньше {{ rules.qty_units }} единиц: скидка {{ rules.qty_percent }} на всю аренду применится в корзине.</small></p>
+      </div>
+      <div class="row">
+        <button class="btn btn-lg" data-add {{ 'disabled' if t.stock == 0 }}>Добавить в корзину</button>
+        {% if cart_count %}<a class="btn btn-ghost btn-lg" href="{{ url_for('cart') }}">Корзина ({{ cart_count }})</a>{% endif %}
+      </div>
+    </form>
+  </div>
+</section>
+
+<section class="wrap tool-more">
+  <div class="tm-col">
+    {% if t.desc %}<h2 class="h-md">Описание</h2><div class="prewrap muted desc">{{ t.desc }}</div>{% endif %}
+    {% if t.specs_rows or is_admin %}<div class="specs-head"><h2 class="h-md">Характеристики</h2>{% if is_admin %}<a class="link" href="{{ url_for('admin_tool_form', tool_id=t.id) }}#specs">Изменить</a>{% endif %}</div>{% endif %}
+    {% if t.specs_rows %}<div class="specs-card glass" role="table" aria-label="Характеристики">
+      {% for k, v in t.specs_rows %}{% if k %}<div class="spec-row" role="row"><span class="spec-k" role="rowheader">{{ k }}</span><span class="spec-v" role="cell">{{ v }}</span></div>{% else %}<div class="spec-row spec-note" role="row"><span role="cell">{{ v }}</span></div>{% endif %}{% endfor %}
+    </div>{% endif %}
+  </div>
+  <div class="tm-col">
+    <h2 class="h-md">Преимущества</h2>
+    <div class="adv">
+      <div class="glass"><b>Точная доступность</b><small class="muted">Свободное количество считается на выбранные даты с учётом всех заявок.</small></div>
+      <div class="glass"><b>Разные сроки в одной заявке</b><small class="muted">У каждого инструмента свои количество и даты аренды.</small></div>
+      <div class="glass"><b>Скидка за количество</b><small class="muted">{{ rules.qty_percent }} на всю аренду при {{ rules.qty_units }} единицах и больше в заявке.</small></div>
+      <div class="glass"><b>Баллы за аренду</b><small class="muted">{{ rules.points_percent }}% от стоимости завершённой аренды, залог не учитывается.</small></div>
+    </div>
+    <h2 class="h-md">Вопросы и ответы</h2>
+    <div class="faq">
+      <details><summary>Как оформить аренду?</summary><p class="muted">Выберите количество и даты, добавьте инструмент в корзину, при необходимости добавьте другие позиции и отправьте заявку. Администратор рассмотрит каждую позицию.</p></details>
+      <details><summary>Что такое залог?</summary><p class="muted">Залог указан отдельно от стоимости аренды. Он не участвует в скидках, не оплачивается баллами и не входит в расчёт баллов.</p></details>
+      <details><summary>Как считаются скидки?</summary><p class="muted">Скидка за количество: {{ rules.qty_percent }} на всю аренду, если в заявке не меньше {{ rules.qty_units }} единиц (считаются все инструменты вместе).
+        {% if rules.has_tiers %}Скидка за срок для каждой позиции: {% for d, p in rules.tiers %}от {{ d }} сут. — {{ p }}{{ ', ' if not loop.last }}{% endfor %}.{% else %}Скидки за срок аренды будут добавлены.{% endif %}
+        Купон применяется после этих скидок.</p></details>
+      <details><summary>Можно ли оплатить баллами?</summary><p class="muted">Да, до {{ rules.points_max }} стоимости аренды после скидок; 1 балл равен 1 рублю. Залог баллами не оплачивается.</p></details>
+      <details><summary>Можно ли взять один инструмент на разные даты?</summary><p class="muted">Да. Добавьте его в корзину несколько раз с разными датами: это будут отдельные позиции одной заявки.</p></details>
+    </div>
   </div>
 </section>
 
@@ -51,4 +87,5 @@
   <div class="grid">{% for x in similar %}{{ b.card(x) }}{% endfor %}</div>
 </div></section>
 {% endif %}
+
 {% endblock %}

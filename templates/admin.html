@@ -2,10 +2,10 @@
 {% import "base.html" as b with context %}
 {% block title %}Админ-панель — ToolRent{% endblock %}
 {% block content %}
-{% set tabs = [('home','Обзор','admin_home'),('orders','Заявки','admin_orders'),('tools','Инструменты','admin_tools'),('dicts','Категории и бренды','admin_dicts'),('users','Пользователи','admin_users'),('coupons','Купоны','admin_coupons'),('journal','Журнал','admin_journal')] %}
+{% set tabs = [('home','Обзор','admin_home'),('orders','Заявки','admin_orders'),('tools','Инструменты','admin_tools'),('dicts','Категории и бренды','admin_dicts'),('pickups','Точки самовывоза','admin_pickups'),('users','Пользователи','admin_users'),('coupons','Купоны','admin_coupons'),('journal','Журнал','admin_journal')] %}
 <section class="wrap adm">
   <h1 class="h-lg">Админ-панель</h1>
-  <nav class="tabs">{% for key, label, ep in tabs %}<a class="{{ 'on' if section == key or section.startswith(key[:-1]) and key != 'home' }}" href="{{ url_for(ep) }}">{{ label }}</a>{% endfor %}</nav>
+  <nav class="tabs">{% for key, label, ep in tabs %}<a class="{{ 'on' if section == key or section.startswith(key[:-1]) and key != 'home' or (key == 'tools' and section == 'instances') }}" href="{{ url_for(ep) }}">{{ label }}</a>{% endfor %}</nav>
 
 {% if section == 'home' %}
   <div class="stats">
@@ -13,6 +13,7 @@
     <div class="glass stat"><b>{{ n_ok }}</b><span>одобрено, ждут выдачи</span></div>
     <div class="glass stat"><b>{{ n_out }}</b><span>сейчас в аренде</span></div>
     <div class="glass stat"><b class="{{ 'bad-text' if n_over }}">{{ n_over }}</b><span>просрочено возвратов</span></div>
+    <a class="glass stat stat-link" href="{{ url_for('admin_users', f='b2b_wait') }}"><b class="{{ 'bad-text' if n_b2b }}">{{ n_b2b }}</b><span>заявок на бизнес-статус</span></a>
     <a class="glass stat stat-link" href="{{ url_for('admin_users') }}"><b>{{ n_unconfirmed }}</b><span>пользователей без подтверждённой почты</span></a>
     <div class="glass stat"><b>{{ n_blocked }}</b><span>заблокировано</span></div>
   </div>
@@ -26,10 +27,10 @@
     <select name="state"><option value="">Все</option><option value="1" {{ 'selected' if state == '1' }}>Активные</option><option value="0" {{ 'selected' if state == '0' }}>Снятые с аренды</option></select>
     <button class="btn btn-sm">Найти</button><a class="btn btn-sm btn-ghost" href="{{ url_for('admin_tool_form') }}">+ Новый инструмент</a>
   </form>
-  <div class="glass p-card"><div class="table-wrap"><table class="tbl"><thead><tr><th></th><th>№</th><th>Инструмент</th><th>Категория</th><th>Цена/сутки</th><th>Залог</th><th>Склад</th><th>Статус</th><th></th></tr></thead><tbody>
+  <div class="glass p-card"><div class="table-wrap"><table class="tbl"><thead><tr><th></th><th>№</th><th>Инструмент</th><th>Категория</th><th>Цена/сутки</th><th>Залог</th><th>Экземпляры</th><th>Статус</th><th></th></tr></thead><tbody>
   {% for t in tools %}<tr><td><img class="thumb" src="{{ url_for('img', name=t.img) }}" alt=""></td><td>{{ t.id }}</td>
     <td><span class="brand">{{ t.brand }}</span><a class="link" href="{{ url_for('admin_tool_form', tool_id=t.id) }}">{{ t.name }}</a></td>
-    <td>{% for c in categories if c.id == t.cat %}{{ c.name }}{% endfor %}</td><td>{{ t.price|rub }}</td><td>{{ t.deposit|rub }}</td><td>{{ t.stock }}</td>
+    <td>{% for c in categories if c.id == t.cat %}{{ c.name }}{% endfor %}</td><td>{{ t.price|rub }}</td><td>{{ t.deposit|rub }}</td><td><a class="link" href="{{ url_for('admin_instances', tool_id=t.id) }}">{{ t.stock }} из {{ t.owned }}</a><br><small class="muted">{{ t.article or 'без артикула' }}</small></td>
     <td><span class="pill {{ 's-ok' if t.active else 's-off' }}">{{ 'активен' if t.active else 'снят' }}</span></td>
     <td><form method="post" action="{{ url_for('admin_tool_toggle', tool_id=t.id) }}">{{ csrf_field() }}<button class="btn btn-sm btn-ghost">{{ 'Снять' if t.active else 'Включить' }}</button></form></td></tr>
   {% else %}<tr><td colspan="9" class="muted">Ничего не найдено.</td></tr>{% endfor %}</tbody></table></div></div>
@@ -44,15 +45,62 @@
       <label class="field">Категория<select name="cat" required><option value="">—</option>{% for c in cats %}<option value="{{ c.id }}" {{ 'selected' if t and t.cat == c.id }}>{{ c.name }}</option>{% endfor %}</select></label>
       <label class="field">Цена за сутки, ₽<input name="price" inputmode="decimal" value="{{ t.price if t else '' }}" required></label>
       <label class="field">Залог, ₽<input name="deposit" inputmode="decimal" value="{{ t.deposit if t else '0' }}"></label>
-      <label class="field">Количество на складе<input type="number" name="stock" min="0" value="{{ t.stock if t else 0 }}" required></label>
+      <label class="field">Количество экземпляров<input type="number" name="stock" min="0" value="{{ t.owned if t else 0 }}" required>
+        <small class="muted">Увеличение создаёт недостающие экземпляры с инвентарными кодами. Уменьшить можно только списанием на странице экземпляров.</small></label>
+      {% if t %}<div class="field">Артикул<b>{{ t.article or 'будет назначен автоматически' }}</b>
+        <small><a class="link" href="{{ url_for('admin_instances', tool_id=t.id) }}">Физические экземпляры: {{ t.stock }} доступно из {{ t.owned }}</a></small></div>
+      {% else %}<label class="field">Серия артикула (необязательно)<input name="article" maxlength="10" placeholder="например ABC; пусто — следующая по порядку"></label>{% endif %}
       <label class="check"><input type="checkbox" name="active" value="1" {{ 'checked' if not t or t.active }}><span>Активен (виден в каталоге)</span></label>
     </div>
     <label class="field">Описание<textarea name="descr" rows="6">{{ t.desc if t else '' }}</textarea></label>
-    <label class="field">Характеристики<textarea name="specs" rows="6">{{ t.specs if t else '' }}</textarea></label>
+    <div class="field" id="specs"><span>Характеристики</span>
+      <div class="spec-edit" data-spec-rows>
+        <div class="spec-edit-head"><small class="muted">Характеристика</small><small class="muted">Значение</small><span></span></div>
+        {% for k, v in (t.specs_rows if t else []) %}<div class="spec-edit-row"><input name="spec_k" value="{{ k }}" placeholder="Например: Бренд" maxlength="70"><input name="spec_v" value="{{ v }}" placeholder="Например: Bosch" maxlength="300"><button type="button" class="icon-x" data-spec-del aria-label="Удалить строку">×</button></div>{% endfor %}
+        {% for _ in range(3) %}<div class="spec-edit-row"><input name="spec_k" placeholder="Характеристика" maxlength="70"><input name="spec_v" placeholder="Значение" maxlength="300"><button type="button" class="icon-x" data-spec-del aria-label="Удалить строку">×</button></div>{% endfor %}
+      </div>
+      <template id="spec-row-tpl"><div class="spec-edit-row"><input name="spec_k" placeholder="Характеристика" maxlength="70"><input name="spec_v" placeholder="Значение" maxlength="300"><button type="button" class="icon-x" data-spec-del aria-label="Удалить строку">×</button></div></template>
+      <div class="row"><button type="button" class="btn btn-sm btn-ghost" data-spec-add>+ Добавить характеристику</button></div>
+      <details class="spec-bulk"><summary class="muted">Вставить списком</summary>
+        <textarea name="specs_bulk" rows="5" placeholder="Артикул: 601083101&#10;Модель: GTC 400 C Professional&#10;Бренд: Bosch"></textarea>
+        <small class="muted">По одной характеристике на строку в виде «Название: значение». Они добавятся к таблице выше.</small></details>
+    </div>
     <div class="photo-row">{% if t %}<img class="thumb big" src="{{ url_for('img', name=t.img) }}" alt="">{% endif %}
       <label class="field">Фотография (JPG, PNG или WEBP до 5 МБ){% if t and t.photo %} — сейчас: {{ t.photo }}{% endif %}<input type="file" name="photo" accept="image/jpeg,image/png,image/webp"></label></div>
     <div class="row"><button class="btn">Сохранить</button><a class="btn btn-ghost" href="{{ url_for('admin_tools') }}">К списку</a></div>
   </form>
+
+{% elif section == 'instances' %}
+  <div class="row between"><h3>{{ tool.name }} <span class="muted">· {{ tool.article or 'без артикула' }}</span></h3>
+    <a class="btn btn-sm btn-ghost" href="{{ url_for('admin_tool_form', tool_id=tool.id) }}">Карточка модели</a></div>
+  <p class="muted">Доступно к аренде: <b>{{ tool.stock }}</b> из {{ tool.owned }} (на проверке и в ремонте экземпляры в доступный склад не входят, списанные исключены навсегда).</p>
+  {% for i in insts %}
+  <div class="glass p-card">
+    <div class="row between">
+      <h3>{% if i.code_inv %}{{ i.code_inv }}{% else %}<span class="muted">код освобождён</span> · экземпляр №{{ i.id_instance }}{% endif %}</h3>
+      <span><span class="pill {{ 's-ok' if i.state == 'Доступен' else 's-wait' if i.state == 'На проверке' else 's-bad' if i.state == 'Списан' else 's-go' }}">{{ i.state }}</span>
+        {% if i.current %}<span class="pill s-go">{{ i.current.status }}: заявка №{{ i.current.item.id_rent if i.current.item else '?' }}{% if i.current.item %}, {{ i.current.item.start|d }}–{{ i.current.item.end|d }}{% endif %}</span>{% endif %}</span>
+    </div>
+    <p class="muted"><small>Добавлен {{ i.added|d }}{% if i.avg_grade is not none %} · средняя оценка качества {{ i.avg_grade }}%{% endif %}{% if i.note %} · {{ i.note }}{% endif %}</small></p>
+    {% if i.state != 'Списан' %}
+    <form class="inline-rej" method="post" action="{{ url_for('admin_instance_state', iid=i.id_instance) }}">{{ csrf_field() }}
+      <select name="state">{% for st in states %}{% if st != i.state %}<option>{{ st }}</option>{% endif %}{% endfor %}</select>
+      <input name="comment" maxlength="255" placeholder="Комментарий (обязателен для ремонта и списания)">
+      <button class="btn btn-sm">Применить</button>
+    </form>
+    <small class="muted">Приёмка: выберите «Доступен». Списание освобождает инвентарный код, история сохраняется.</small>
+    {% endif %}
+    <details class="pos"><summary><span>История выдач и осмотров</span><span class="muted">{{ i.asg|length }} аренд, {{ i.log|length }} записей</span></summary>
+      <div class="pos-body">
+        {% if i.asg %}<div class="table-wrap"><table class="tbl"><thead><tr><th>Заявка</th><th>Код при выдаче</th><th>Выдан</th><th>Возвращён</th><th>Оценка</th><th>Комментарий</th></tr></thead><tbody>
+          {% for a in i.asg %}<tr><td>{% if a.item %}<a class="link" href="{{ url_for('admin_order', rid=a.item.id_rent) }}">№{{ a.item.id_rent }}</a>{% endif %} <span class="pill s-off">{{ a.status }}</span></td>
+            <td>{{ a.issue_code or '—' }}</td><td>{{ a.issued|dt }}</td><td>{{ a.returned_at|dt }}</td><td>{{ (a.grade ~ '%') if a.grade is not none else '—' }}</td><td>{{ a.comment or '' }}</td></tr>{% endfor %}
+        </tbody></table></div>{% endif %}
+        <ul class="tl">{% for j in i.log %}<li><b>{{ j.event }}</b> <span class="muted">{{ j.event_at|dt }}{% if j.code_at %} · код {{ j.code_at }}{% endif %}{% if j.state_before != j.state_after %} · {{ j.state_before or '—' }} → {{ j.state_after }}{% endif %}{% if j.grade is not none %} · оценка {{ j.grade }}%{% endif %}{% if um.get(j.by_user) %} · {{ um[j.by_user].login }}{% endif %}</span>{% if j.comment %}<br><small>{{ j.comment }}</small>{% endif %}</li>{% endfor %}</ul>
+      </div>
+    </details>
+  </div>
+  {% else %}<div class="glass p-card"><p class="muted">Экземпляров пока нет. Они создаются автоматически по количеству в карточке модели.</p></div>{% endfor %}
 
 {% elif section == 'dicts' %}
   <div class="two-col top">
@@ -70,16 +118,47 @@
   {% endfor %}
   </div>
 
+{% elif section == 'pickups' %}
+  <div class="glass p-card"><h3>Точки самовывоза</h3>
+    <div class="table-wrap"><table class="tbl"><thead><tr><th>Название</th><th>Адрес</th><th>График работы</th><th>Статус</th><th></th></tr></thead><tbody>
+    {% for p in points %}
+      <tr>
+        <td><input form="pk{{ p.id_pickup }}" name="name" value="{{ p.name }}" required maxlength="255"></td>
+        <td><input form="pk{{ p.id_pickup }}" name="address" value="{{ p.address }}" required maxlength="255"></td>
+        <td><input form="pk{{ p.id_pickup }}" name="schedule" value="{{ p.schedule }}" required maxlength="255"></td>
+        <td><span class="pill {{ 's-ok' if p.active else 's-off' }}">{{ 'активна' if p.active else 'отключена' }}</span></td>
+        <td>
+          <form id="pk{{ p.id_pickup }}" method="post" action="{{ url_for('admin_pickup_save') }}">{{ csrf_field() }}<input type="hidden" name="id" value="{{ p.id_pickup }}"><button class="btn btn-sm btn-ghost">Сохранить</button></form>
+          <form method="post" action="{{ url_for('admin_pickup_toggle', pid=p.id_pickup) }}">{{ csrf_field() }}<button class="btn btn-sm btn-ghost">{{ 'Отключить' if p.active else 'Включить' }}</button></form>
+          <form method="post" action="{{ url_for('admin_pickup_delete', pid=p.id_pickup) }}" onsubmit="return confirm('Удалить точку? В старых заявках она сохранится.')">{{ csrf_field() }}<button class="btn btn-sm btn-ghost">Удалить</button></form>
+        </td>
+      </tr>
+    {% else %}<tr><td colspan="5" class="muted">Точек пока нет.</td></tr>{% endfor %}
+      <tr>
+        <td><input form="pk0" name="name" placeholder="Название, например «Склад на Ленина»" required maxlength="255"></td>
+        <td><input form="pk0" name="address" placeholder="Адрес" required maxlength="255"></td>
+        <td><input form="pk0" name="schedule" placeholder="Пн–Пт 9:00–19:00, Сб 10:00–16:00" required maxlength="255"></td>
+        <td></td>
+        <td><form id="pk0" method="post" action="{{ url_for('admin_pickup_save') }}">{{ csrf_field() }}<input type="hidden" name="id" value="0"><button class="btn btn-sm">Добавить</button></form></td>
+      </tr>
+    </tbody></table></div>
+    <p class="muted"><small>Новая точка сразу активна. Клиенты видят в списке только активные.</small></p>
+  </div>
+
 {% elif section == 'orders' %}
   <form class="glass filters-row" method="get"><select name="status"><option value="">Все статусы</option>{% for s in statuses %}<option {{ 'selected' if s == status }}>{{ s }}</option>{% endfor %}</select><button class="btn btn-sm">Показать</button></form>
-  <div class="glass p-card"><div class="table-wrap"><table class="tbl"><thead><tr><th>№</th><th>Клиент</th><th>Создана</th><th>Статус</th><th>Аренда</th><th>Залог</th></tr></thead><tbody>
-  {% for o in orders %}<tr><td><a class="link" href="{{ url_for('admin_order', rid=o.id_rent) }}">№{{ o.id_rent }}</a></td><td>{{ um[o.id_user].login if um.get(o.id_user) else o.id_user }}</td><td>{{ o.created|dt }}</td><td>{{ b.pill(o.status) }}</td><td>{{ o.rent_sum|rub }}</td><td>{{ o.deposit_sum|rub }}</td></tr>
-  {% else %}<tr><td colspan="6" class="muted">Заявок нет.</td></tr>{% endfor %}</tbody></table></div></div>
+  <div class="glass p-card"><div class="table-wrap"><table class="tbl"><thead><tr><th>№</th><th>Клиент</th><th>Объект</th><th>Создана</th><th>Статус</th><th>Аренда</th><th>Залог</th></tr></thead><tbody>
+  {% for o in orders %}<tr><td><a class="link" href="{{ url_for('admin_order', rid=o.id_rent) }}">№{{ o.id_rent }}</a></td><td>{{ um[o.id_user].login if um.get(o.id_user) else o.id_user }}</td><td>{{ o.object or '—' }}</td><td>{{ o.created|dt }}</td><td>{{ b.pill(o.status) }}{% if o.id_rent in paid %} <span class="pill s-ok">оплачено</span>{% endif %}</td><td>{{ o.rent_sum|rub }}</td><td>{{ o.deposit_sum|rub }}</td></tr>
+  {% else %}<tr><td colspan="7" class="muted">Заявок нет.</td></tr>{% endfor %}</tbody></table></div></div>
 
 {% elif section == 'order' %}
   <div class="glass p-card">
-    <div class="row between"><h3>Заявка №{{ order.id_rent }}</h3>{{ b.pill(order.status) }}</div>
+    <div class="row between"><h3>Заявка №{{ order.id_rent }}</h3><span>{{ b.pill(order.status) }} {% if paid %}<span class="pill s-ok">оплачено (демо)</span>{% endif %}</span></div>
     <p class="muted">Клиент: {% if customer %}<a class="link" href="{{ url_for('admin_user', uid=customer.id_user) }}">{{ customer.login }}</a> ({{ customer.fio }}, {{ customer.email }}{% if customer.phone %}, {{ customer.phone }}{% endif %}){% endif %} · {{ order.created|dt }} · {{ order.delivery }}</p>
+        {% if order.object or order.pickup or order.delivery_address %}
+    <p><b>Объект:</b> {{ order.object or '—' }}<br>
+      {% if order.delivery == 'Доставка' %}<b>Адрес доставки:</b> {{ order.delivery_address or '—' }}{% else %}<b>Точка самовывоза:</b> {{ order.pickup or '—' }}{% endif %}</p>
+    {% endif %}
     <div class="acc-list">
     {% for p in positions %}
       <details class="pos" open>
@@ -87,13 +166,32 @@
         <div class="pos-body">
           <div class="sum"><span>{{ p.price_at|rub }} × {{ p.days }} сут.</span><b>{{ p.sum|rub }}</b></div>
           {% if p.status == 'На рассмотрении' or p.status == 'Одобрена' %}<small class="muted">Свободно на эти даты сейчас: {{ p.free }} шт.</small>{% endif %}
+          {% if p.asg %}
+          <div class="table-wrap"><table class="tbl"><thead><tr><th>Экземпляр</th><th>Назначение</th>{% if p.status == 'Возвращена' %}<th>Оценка</th><th>Комментарий</th>{% endif %}</tr></thead><tbody>
+            {% for x in p.asg %}<tr><td><b>{{ x.issue_code or x.inst.code_inv or ('№' ~ x.inst.id_instance) }}</b></td><td><span class="pill {{ 's-go' if x.status == 'Выдан' else 's-done' if x.status == 'Возвращён' else 's-wait' }}">{{ x.status }}</span>{% if x.issued %} <small class="muted">выдан {{ x.issued|dt }}</small>{% endif %}{% if x.returned_at %} <small class="muted">возврат {{ x.returned_at|dt }}</small>{% endif %}</td>
+              {% if p.status == 'Возвращена' %}<td>{{ x.grade if x.grade is not none else '—' }}{% if x.grade is not none %}%{% endif %}</td><td>{{ x.comment or '' }}</td>{% endif %}</tr>{% endfor %}
+          </tbody></table></div>
+          {% endif %}
+          {% if p.status == 'Выдана' and p.asg %}
+          <form method="post" action="{{ url_for('admin_order_item', rid=order.id_rent) }}">{{ csrf_field() }}<input type="hidden" name="item_id" value="{{ p.id_item }}">
+            <p class="muted"><small>Осмотрите каждый экземпляр: оценка качества 0–100%, комментарий и дальнейшее состояние. Или подтвердите одной кнопкой, что все прошли проверку.</small></p>
+            <div class="table-wrap"><table class="tbl"><thead><tr><th>Экземпляр</th><th>Оценка, %</th><th>Состояние после приёмки</th><th>Комментарий</th></tr></thead><tbody>
+              {% for x in p.asg if x.status == 'Выдан' %}<tr><td><b>{{ x.issue_code or x.inst.code_inv }}</b></td>
+                <td><input class="n-in" type="number" name="grade-{{ x.id_instance_rent }}" min="0" max="100" value="100"></td>
+                <td><select name="state-{{ x.id_instance_rent }}">{% for st in ['Доступен', 'На проверке', 'В ремонте', 'Списан'] %}<option>{{ st }}</option>{% endfor %}</select></td>
+                <td><input name="comment-{{ x.id_instance_rent }}" maxlength="255" placeholder="Обязателен для ремонта и списания"></td></tr>{% endfor %}
+            </tbody></table></div>
+            <div class="row"><button class="btn btn-sm" name="action" value="return">Подтвердить возврат</button>
+              <button class="btn btn-sm btn-ghost" name="action" value="return_all" formnovalidate>Все прошли проверку: принять</button></div>
+          </form>
+          {% endif %}
           <div class="row">
             {% if p.status == 'На рассмотрении' %}
               <form method="post" action="{{ url_for('admin_order_item', rid=order.id_rent) }}">{{ csrf_field() }}<input type="hidden" name="item_id" value="{{ p.id_item }}"><input type="hidden" name="action" value="approve"><button class="btn btn-sm">Одобрить</button></form>
               <form class="inline-rej" method="post" action="{{ url_for('admin_order_item', rid=order.id_rent) }}">{{ csrf_field() }}<input type="hidden" name="item_id" value="{{ p.id_item }}"><input type="hidden" name="action" value="reject"><input name="reason" placeholder="Причина отказа (обязательно)" required maxlength="255"><button class="btn btn-sm btn-ghost">Отказать</button></form>
             {% elif p.status == 'Одобрена' %}
               <form method="post" action="{{ url_for('admin_order_item', rid=order.id_rent) }}">{{ csrf_field() }}<input type="hidden" name="item_id" value="{{ p.id_item }}"><input type="hidden" name="action" value="issue"><button class="btn btn-sm">Подтвердить выдачу</button></form>
-            {% elif p.status == 'Выдана' %}
+            {% elif p.status == 'Выдана' and not p.asg %}
               <form method="post" action="{{ url_for('admin_order_item', rid=order.id_rent) }}">{{ csrf_field() }}<input type="hidden" name="item_id" value="{{ p.id_item }}"><input type="hidden" name="action" value="return"><button class="btn btn-sm">Подтвердить возврат</button></form>
             {% endif %}
           </div>
@@ -111,9 +209,9 @@
   </div>
 
 {% elif section == 'users' %}
-  <form class="glass filters-row" method="get"><input type="search" name="q" value="{{ q }}" placeholder="Логин, ФИО, email, телефон"><button class="btn btn-sm">Найти</button></form>
+  <form class="glass filters-row" method="get"><input type="search" name="q" value="{{ q }}" placeholder="Логин, ФИО, email, телефон"><button class="btn btn-sm">Найти</button>{% if flt == 'b2b_wait' %}<input type="hidden" name="f" value="b2b_wait"><a class="btn btn-sm btn-ghost" href="{{ url_for('admin_users') }}">Все пользователи</a>{% else %}<a class="btn btn-sm btn-ghost" href="{{ url_for('admin_users', f='b2b_wait') }}">Ждут бизнес-статус{% if wait %} ({{ wait|length }}){% endif %}</a>{% endif %}</form>
   <div class="glass p-card"><div class="table-wrap"><table class="tbl"><thead><tr><th>№</th><th>Логин</th><th>ФИО</th><th>Email</th><th>Роль</th><th>Баллы</th><th>Статус</th></tr></thead><tbody>
-  {% for u in users %}<tr><td>{{ u.id_user }}</td><td><a class="link" href="{{ url_for('admin_user', uid=u.id_user) }}">{{ u.login }}</a></td><td>{{ u.fio }}</td><td>{{ u.email }} {% if not u.email_ok %}<span class="pill s-wait">не подтв.</span>{% endif %}</td><td>{{ u.role }}</td><td>{{ u.points }}</td><td>{% if u.active %}<span class="pill s-ok">активен</span>{% else %}<span class="pill s-bad">заблокирован</span>{% endif %}</td></tr>
+  {% for u in users %}<tr><td>{{ u.id_user }}</td><td><a class="link" href="{{ url_for('admin_user', uid=u.id_user) }}">{{ u.login }}</a></td><td>{{ u.fio }}</td><td>{{ u.email }} {% if not u.email_ok %}<span class="pill s-wait">не подтв.</span>{% endif %}</td><td>{{ u.role }}{% if u.id_user in wait %} <span class="pill s-wait">ждёт подтверждения</span>{% endif %}</td><td>{{ u.points }}</td><td>{% if u.active %}<span class="pill s-ok">активен</span>{% else %}<span class="pill s-bad">заблокирован</span>{% endif %}</td></tr>
   {% else %}<tr><td colspan="7" class="muted">Никого не найдено.</td></tr>{% endfor %}</tbody></table></div></div>
 
 {% elif section == 'user' %}
@@ -123,9 +221,35 @@
       <dt>Телефон</dt><dd>{{ u.phone or '—' }}</dd><dt>Адрес</dt><dd>{{ u.address or '—' }}</dd><dt>Регистрация</dt><dd>{{ u.reg_date|d }}</dd><dt>Баллы</dt><dd>{{ u.points }}</dd>
       <dt>Заявок / завершено</dt><dd>{{ stats.orders }} / {{ stats.done }}</dd><dt>Оценочная выгода</dt><dd>{{ stats.benefit|rub }}</dd>
       <dt>Статус</dt><dd>{% if u.active %}активен{% else %}заблокирован: {{ u.block_reason }} ({{ u.block_date|d }}){% endif %}</dd></dl>
-      {% if org %}<h3>Реквизиты</h3><dl class="kv"><dt>Тип</dt><dd>{{ org.org_type }}</dd><dt>Компания</dt><dd>{{ org.company }}</dd><dt>ИНН</dt><dd>{{ org.inn }}</dd><dt>КПП</dt><dd>{{ org.kpp or '—' }}</dd><dt>Адрес</dt><dd>{{ org.legal_address }}</dd></dl>{% endif %}
+      {% if org %}<h3>Реквизиты {% if pending %}<span class="pill s-wait">заявка на бизнес-статус</span>{% endif %}</h3><dl class="kv"><dt>Тип</dt><dd>{{ org.org_type }}</dd><dt>Компания</dt><dd>{{ org.company }}</dd><dt>ИНН</dt><dd>{{ org.inn }}</dd><dt>КПП</dt><dd>{{ org.kpp or '—' }}</dd><dt>Адрес</dt><dd>{{ org.legal_address }}</dd></dl>{% endif %}
+      {% if org or b2b_docs %}
+        <h3>Документы организации</h3>
+        {% for kind, title in [('card', 'Карточка организации'), ('poa', 'Доверенность на получение оборудования')] %}
+          {% set doc = b2b_docs.get(kind) %}
+          <div class="msg">
+            <div class="row between">
+              <strong>{{ title }}</strong>
+              {% if not doc %}<span class="pill s-off">Не загружен</span>
+              {% elif doc.status == 'approved' %}<span class="pill s-ok">Подтверждён</span>
+              {% elif doc.status == 'rejected' %}<span class="pill s-bad">Отклонён</span>
+              {% else %}<span class="pill s-wait">На проверке</span>{% endif %}
+            </div>
+            {% if doc %}
+              <p><a class="link" href="{{ url_for('download_client_doc', uid=u.id_user, kind=kind) }}">Скачать {{ doc.orig }}</a> <small class="muted">({{ doc.at }})</small></p>
+              {% if doc.reason %}<p class="bad-text"><small>Причина отказа: {{ doc.reason }}</small></p>{% endif %}
+              <div class="row">
+                <form method="post" action="{{ url_for('admin_user_action', uid=u.id_user, action='doc-review') }}">{{ csrf_field() }}<input type="hidden" name="kind" value="{{ kind }}"><input type="hidden" name="decision" value="approved"><button class="btn btn-sm">Подтвердить</button></form>
+                <form method="post" action="{{ url_for('admin_user_action', uid=u.id_user, action='doc-review') }}" class="inline-rej">{{ csrf_field() }}<input type="hidden" name="kind" value="{{ kind }}"><input type="hidden" name="decision" value="rejected"><input name="reason" placeholder="Причина отклонения" required maxlength="255"><button class="btn btn-sm btn-ghost">Отклонить</button></form>
+              </div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      {% endif %}
     </div>
     <div class="glass p-card"><h3>Действия</h3>
+      {% if pending %}<div class="biz-req"><b>Заявка на бизнес-статус</b><small class="muted">Подтверждение включает скидку {{ biz_pct }} для режима «Бизнесу».</small>
+        <form method="post" action="{{ url_for('admin_user_action', uid=u.id_user, action='b2b-approve') }}">{{ csrf_field() }}<button class="btn btn-sm">Подтвердить бизнес-статус</button></form>
+        <form class="inline-rej" method="post" action="{{ url_for('admin_user_action', uid=u.id_user, action='b2b-reject') }}">{{ csrf_field() }}<input name="reason" placeholder="Причина отказа" required maxlength="255"><button class="btn btn-sm btn-ghost">Отклонить</button></form></div>{% endif %}
       {% if not u.email_ok %}<form method="post" action="{{ url_for('admin_user_action', uid=u.id_user, action='confirm-email') }}">{{ csrf_field() }}<button class="btn btn-sm">Подтвердить почту вручную</button></form>{% endif %}
       {% if u.role != 'admin' %}
         {% if u.active %}<form class="inline-rej" method="post" action="{{ url_for('admin_user_action', uid=u.id_user, action='block') }}">{{ csrf_field() }}<input name="reason" placeholder="Причина блокировки" required maxlength="255"><button class="btn btn-sm btn-ghost">Заблокировать</button></form>
@@ -147,7 +271,7 @@
   <div class="row"><a class="btn btn-sm" href="{{ url_for('admin_coupon_form') }}">+ Новый купон</a></div>
   <div class="glass p-card"><div class="table-wrap"><table class="tbl"><thead><tr><th>Код</th><th>Название</th><th>Скидка</th><th>Срок</th><th>Мин. сумма</th><th>Лимит</th><th>Выдано / использовано</th><th></th></tr></thead><tbody>
   {% for c in coupons %}<tr><td>{{ c.code }}</td><td><a class="link" href="{{ url_for('admin_coupon_form', cid=c.id_coupon) }}">{{ c.name }}</a> {% if not c.active %}<span class="pill s-off">выкл.</span>{% endif %}</td>
-    <td>{{ (c.amount|string|replace('.00','')) ~ ('%' if c.disc_type == 'Процент' else ' ₽') }}</td><td>{{ c.start|d }} — {{ c.end|d }}</td><td>{{ c.min_sum|rub }}</td><td>{{ c.limit or '∞' }}</td><td>{{ given.get(c.id_coupon, 0) }} / {{ used.get(c.id_coupon, 0) }}</td>
+    <td>{{ c|coupon_value }}</td><td>{{ c.start|d }} — {{ c.end|d }}</td><td>{{ c.min_sum|rub }}</td><td>{{ c.limit or '∞' }}</td><td>{{ given.get(c.id_coupon, 0) }} / {{ used.get(c.id_coupon, 0) }}</td>
     <td class="coupon-actions"><form method="post" action="{{ url_for('admin_coupon_toggle', cid=c.id_coupon) }}">{{ csrf_field() }}<button class="btn btn-sm btn-ghost">{{ 'Деактивировать' if c.active else 'Активировать' }}</button></form>
       <form class="inline-rej" method="post" action="{{ url_for('admin_coupon_assign', cid=c.id_coupon) }}">{{ csrf_field() }}<input name="login" placeholder="Логин" required><button class="btn btn-sm">Выдать</button></form></td></tr>
   {% else %}<tr><td colspan="8" class="muted">Купонов нет.</td></tr>{% endfor %}</tbody></table></div></div>
@@ -158,7 +282,7 @@
     <label class="field">Название<input name="name" value="{{ c.name if c else '' }}" required maxlength="255"></label>
     <label class="field">Описание<textarea name="descr" rows="3">{{ c.descr or '' if c else '' }}</textarea></label>
     <div class="two">
-      <label class="field">Тип скидки<select name="disc_type"><option {{ 'selected' if c and c.disc_type == 'Процент' }}>Процент</option><option {{ 'selected' if c and c.disc_type == 'Сумма' }}>Сумма</option></select></label>
+      <label class="field">Тип скидки<select name="disc_type"><option {{ 'selected' if c and c.disc_type == 'Процент' }}>Процент</option><option {{ 'selected' if c and c.disc_type != 'Процент' }}>Фиксированная</option></select></label>
       <label class="field">Размер (процент или рубли)<input name="amount" inputmode="decimal" value="{{ c.amount if c else '' }}" required></label>
       <label class="field">Действует с<input type="date" name="start" value="{{ c.start|iso if c else '' }}"></label>
       <label class="field">Действует по<input type="date" name="end" value="{{ c.end|iso if c else '' }}"></label>

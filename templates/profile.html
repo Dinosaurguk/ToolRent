@@ -54,17 +54,21 @@
       {% for o in recent %}<a class="orow" href="{{ url_for('profile_order', rid=o.id_rent) }}"><b>№{{ o.id_rent }}</b><span>{{ o.created|d }}</span>{{ b.pill(o.status) }}<b>{{ o.rent_sum|rub }}</b></a>{% endfor %}
     </div>{% endif %}
 
-  {% elif section == 'orders' %}
-    <div class="glass p-card"><h3>История аренд</h3>
-    {% if orders %}<div class="table-wrap"><table class="tbl"><thead><tr><th>№</th><th>Дата</th><th>Позиций</th><th>Статус</th><th>Аренда</th><th>Залог</th></tr></thead><tbody>
-      {% for o in orders %}<tr><td><a class="link" href="{{ url_for('profile_order', rid=o.id_rent) }}">№{{ o.id_rent }}</a></td><td>{{ o.created|d }}</td><td>{{ o.n_items }}</td><td>{{ b.pill(o.status) }}</td><td>{{ o.rent_sum|rub }}</td><td>{{ o.deposit_sum|rub }}</td></tr>{% endfor %}
-    </tbody></table></div>
-    {% else %}<div class="empty"><p class="muted">Заявок пока нет.</p><a class="btn btn-ghost" href="{{ url_for('catalog') }}#list">Выбрать инструмент</a></div>{% endif %}</div>
+{% elif section == 'orders' %}
+  <div class="glass p-card"><h3>История аренд</h3>
+    {% if orders %}<div class="table-wrap"><table class="tbl"><thead><tr><th>№</th><th>Дата</th><th>Объект</th><th>Позиций</th><th>Статус</th><th>Аренда</th><th>Залог</th><th></th></tr></thead><tbody>
+    {% for o in orders %}<tr><td><a class="link" href="{{ url_for('profile_order', rid=o.id_rent) }}">№{{ o.id_rent }}</a></td><td>{{ o.created|d }}</td><td>{{ o.object or '—' }}</td><td>{{ o.n_items }}</td><td>{{ b.pill(o.status) }}{% if o.paid %} <span class="pill s-ok">оплачено</span>{% endif %}</td><td>{{ o.rent_sum|rub }}</td><td>{{ o.deposit_sum|rub }}</td><td><a class="link" href="{{ url_for('profile_order', rid=o.id_rent) }}">Открыть</a></td></tr>{% endfor %}
+    </tbody></table></div>{% else %}<p class="muted">Заявок пока нет. <a class="link" href="{{ url_for('catalog') }}">Выбрать инструмент</a>.</p>{% endif %}
+  </div>
 
   {% elif section == 'order' %}
     <div class="glass p-card">
-      <div class="row between"><h3>Заявка №{{ order.id_rent }}</h3>{{ b.pill(order.status) }}</div>
+      <div class="row between"><h3>Заявка №{{ order.id_rent }}</h3><span>{{ b.pill(order.status) }} {% if paid %}<span class="pill s-ok">Оплачено (демо)</span>{% endif %}</span></div>
       <p class="muted">Создана {{ order.created|dt }} · {{ order.delivery }}</p>
+      {% if order.object or order.pickup or order.delivery_address %}
+      <p><b>Объект:</b> {{ order.object or '—' }}<br>
+        {% if order.delivery == 'Доставка' %}<b>Адрес доставки:</b> {{ order.delivery_address or '—' }}{% else %}<b>Точка самовывоза:</b> {{ order.pickup or '—' }}{% endif %}</p>
+      {% endif %}
       <div class="acc-list">
       {% for p in positions %}
         <details class="pos" {{ 'open' if loop.length == 1 }}>
@@ -83,6 +87,14 @@
       <div class="sum"><span>Залог</span><b>{{ order.deposit_sum|rub }}</b></div>
       <h3>Статусы заявки</h3>
       <ul class="tl">{% for h in history %}<li><b>{{ h.new_status }}</b> <span class="muted">{{ h.at|dt }}</span>{% if h.comment %}<br><small>{{ h.comment }}</small>{% endif %}</li>{% endfor %}</ul>
+      {% if paid %}
+      <div class="pay-box ok"><b>Оплата успешно выполнена</b><small class="muted">Демонстрационная оплата: реальных денежных операций нет.</small></div>
+      {% elif can_pay %}
+      <form class="pay-box" method="post" action="{{ url_for('profile_order_pay', rid=order.id_rent) }}">{{ csrf_field() }}
+        <div><b>К оплате: {{ pay_k|rubk }}</b><br><small class="muted">Аренда {{ order.rent_sum|rub }} и залог {{ order.deposit_sum|rub }}. Это демонстрационная оплата: платёжные данные не запрашиваются, реальных списаний нет.</small></div>
+        <button class="btn">Оплатить</button>
+      </form>
+      {% endif %}
       {% if can_cancel %}<form method="post" action="{{ url_for('profile_order_cancel', rid=order.id_rent) }}">{{ csrf_field() }}<button class="btn btn-ghost">Отменить заявку</button></form>{% endif %}
     </div>
 
@@ -102,7 +114,7 @@
     <div class="glass p-card"><h3>Купоны</h3>
     {% if coupons %}<div class="grid grid-2">
       {% for c in coupons %}<div class="glass coupon {{ 'dead' if c.state != 'Доступен' }}">
-        <b class="price">{{ (c.c.amount|string|replace('.00','')) ~ ('%' if c.c.disc_type == 'Процент' else ' ₽') }}</b>
+        <b class="price">{{ c.c|coupon_value }}</b>
         <strong>{{ c.c.name }}</strong>
         {% if c.c.descr %}<small class="muted prewrap">{{ c.c.descr }}</small>{% endif %}
         <small class="muted">Код {{ c.c.code }}{% if c.end %} · до {{ c.end|d }}{% endif %}{% if c.c.min_sum and c.c.min_sum > 0 %} · от {{ c.c.min_sum|rub }}{% endif %}</small>
@@ -140,9 +152,12 @@
   {% elif section == 'business' %}
     {% if is_admin %}<div class="glass p-card"><p class="muted">Администратору бизнес-профиль не требуется.</p></div>
     {% else %}
-    <form class="glass p-card" method="post" action="{{ url_for('business_save') }}">{{ csrf_field() }}
-      <h3>{{ 'Реквизиты организации' if org else 'Подключение бизнес-профиля' }}</h3>
-      <p class="muted">{% if org %}Бизнес-профиль подключён. Реквизиты можно изменить.{% else %}Укажите реквизиты организации. Аккаунт останется прежним: история заказов, баллы, купоны и личные данные сохранятся, а роль станет «бизнес-клиент».{% endif %}</p>
+    <form class="glass p-card" method="post" action="{{ url_for('business_save') }}" enctype="multipart/form-data">{{ csrf_field() }}
+      <h3>{{ 'Реквизиты организации' if org else 'Заявка на бизнес-статус' }}
+        {% if is_b2b %}<span class="pill s-ok">подтверждён</span>{% elif org %}<span class="pill s-wait">на рассмотрении</span>{% endif %}</h3>
+      <p class="muted">{% if is_b2b %}Бизнес-статус подтверждён администратором: в режиме «Бизнесу» действует скидка {{ biz_pct }} на аренду.
+        {% elif org %}Заявка отправлена администратору. Пока она не подтверждена, скидка для бизнеса не действует. Данные можно поправить: администратор получит обновление.
+        {% else %}Укажите реквизиты организации и прикрепите два обязательных PDF-документа. Администратор проверит данные и подтвердит бизнес-статус; после этого появится скидка {{ biz_pct }}.{% endif %}</p>
       <div class="two">
         <label class="field">Тип организации
           <select name="org_type" required>{% for o in org_types %}<option {{ 'selected' if org and org.org_type == o }}>{{ o }}</option>{% endfor %}</select></label>
@@ -151,10 +166,32 @@
         <label class="field">КПП (обязателен для ООО, АО, ПАО)<input name="kpp" inputmode="numeric" value="{{ (org.kpp or '') if org else '' }}"></label>
       </div>
       <label class="field">Юридический адрес<input name="legal_address" value="{{ org.legal_address if org else '' }}" required></label>
-      <div class="row"><button class="btn">{{ 'Сохранить реквизиты' if org else 'Подключить бизнес-профиль' }}</button></div>
+
+      <div class="two">
+        {% for kind, title in [('card', 'Карточка организации (PDF)'), ('poa', 'Доверенность на получение оборудования (PDF)')] %}
+          {% set doc = b2b_docs.get(kind) %}
+          <label class="field">
+            <span>{{ title }} ·
+              {% if not doc %}<span class="pill s-off">Не загружен</span>
+              {% elif doc.status == 'approved' %}<span class="pill s-ok">Подтверждён</span>
+              {% elif doc.status == 'rejected' %}<span class="pill s-bad">Отклонён</span>
+              {% else %}<span class="pill s-wait">На проверке</span>{% endif %}
+            </span>
+            <input type="file" name="doc_{{ kind }}" accept=".pdf,application/pdf" {{ 'required' if not doc }}>
+            {% if doc %}
+              <small class="muted">Файл: <a class="link" href="{{ url_for('download_client_doc', uid=me.id_user, kind=kind) }}">{{ doc.orig }}</a> ({{ doc.at }})</small>
+              {% if doc.status == 'rejected' and doc.reason %}<small class="bad-text">Причина отклонения: {{ doc.reason }}. Загрузите исправленный PDF.</small>{% endif %}
+            {% endif %}
+          </label>
+        {% endfor %}
+      </div>
+      <p class="muted"><small>Пустые бланки можно скачать на странице <a class="link" href="{{ url_for('b2b') }}">«Для бизнеса»</a>.</small></p>
+
+      <div class="row"><button class="btn">{{ 'Сохранить реквизиты' if is_b2b else ('Обновить заявку' if org else 'Отправить заявку на подтверждение') }}</button></div>
     </form>
     {% endif %}
   {% endif %}
+
   </div>
 </section>
 {% endblock %}

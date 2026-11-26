@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Корзина — ToolRent{% endblock %}
+{% block content %}
+<section class="page-head"><div class="wrap"><h1 class="h-xl">Корзина</h1>
+  <p class="muted">У каждой позиции свои количество и даты. Суммы и доступность пересчитываются сразу при любом изменении.</p></div></section>
+
+<section class="wrap cart-wrap">
+{% if not lines %}
+  <div class="glass empty-big"><h3>Корзина пуста</h3><p class="muted">Выберите инструмент в каталоге, укажите количество и даты аренды.</p>
+  <a class="btn" href="{{ url_for('catalog') }}#list">Перейти в каталог</a></div>
+{% else %}
+<form id="cart-form" class="cart-grid" method="post" action="{{ url_for('cart') }}" data-balance="{{ balance }}">
+  {{ csrf_field() }}
+  <div class="cart-items">
+    {% for l in lines %}
+    <article class="glass cart-item rent-line {{ 'bad' if not l.avail.ok }}" data-k="{{ l.k }}" data-tool-id="{{ l.tool.id }}"
+             data-price-k="{{ l.price_k }}" data-deposit-k="{{ l.deposit_k }}" data-today="{{ today_iso }}"
+             data-avail-ok="{{ 1 if l.avail.ok else 0 }}" data-free="{{ l.avail.free }}" data-avail-msg="{{ l.avail.message }}">
+      <a class="ci-img" href="{{ url_for('tool', tool_id=l.tool.id) }}"><img src="{{ url_for('img', name=l.tool.img) }}" alt="{{ l.tool.name }}"></a>
+      <div class="ci-body">
+        <div class="ci-head">
+          <div><span class="brand">{{ l.tool.brand }}</span><a href="{{ url_for('tool', tool_id=l.tool.id) }}"><h3>{{ l.tool.name }}</h3></a>
+            <small class="muted">{{ l.tool.price|price_html }} за сутки · залог {{ l.tool.deposit|rub }} за единицу</small></div>
+          <button class="icon-btn" formaction="{{ url_for('cart_remove', k=l.k) }}" formnovalidate aria-label="Удалить позицию">✕</button>
+        </div>
+        <div class="period">
+          <label class="field">Количество<input type="number" name="qty-{{ l.k }}" data-f="qty" value="{{ l.qty }}" min="1" max="9999" inputmode="numeric"></label>
+          <label class="field">Начало аренды<input type="date" name="start-{{ l.k }}" data-f="start" value="{{ l.start|iso }}" min="{{ today_iso }}"></label>
+          <label class="field">Срок, суток<input type="number" name="days-{{ l.k }}" data-f="days" value="{{ l.days }}" min="1" max="365" inputmode="numeric"></label>
+          <label class="field">Окончание<input type="date" name="end-{{ l.k }}" data-f="end" value="{{ l.end|iso }}" min="{{ today_iso }}"></label>
+        </div>
+        <div class="presets">{% for d in [1, 3, 7, 14, 30] %}<button type="button" class="chip-btn {{ 'on' if l.days == d }}" data-set-days="{{ d }}">{{ d }} сут.</button>{% endfor %}</div>
+        <div class="avail {{ 'ok' if l.avail.ok else 'bad' }}" data-o="avail">{% if l.avail.ok %}Доступно {{ l.avail.free }} шт. на этот период — выбранное количество можно взять.{% else %}{{ l.avail.message }}{% endif %}</div>
+        <button type="button" class="chip-btn" data-fix-qty="{{ l.avail.free }}" hidden>Выбрать {{ l.avail.free }} шт.</button>
+        <div class="ci-sum">
+          <div class="sum"><span>Аренда <small class="muted" data-o="days-label">{{ l.days }} сут.</small></span><b data-o="base">{{ l.q.base|rubk }}</b></div>
+          <div class="sum" data-row="disc" {{ 'hidden' if not (l.q.dur + l.q.qty_disc + l.q.corp) }}><span>Скидки <small class="muted" data-o="disc-note"></small></span><b data-o="disc">−{{ (l.q.dur + l.q.qty_disc + l.q.corp)|rubk }}</b></div>
+          <div class="sum total"><span>Стоимость позиции</span><b data-o="rent">{{ l.q.rent|rubk }}</b></div>
+          <div class="sum"><span>Залог</span><b data-o="deposit">{{ l.q.deposit|rubk }}</b></div>
+        </div>
+      </div>
+    </article>
+    {% endfor %}
+    <div class="row"><a class="btn btn-ghost" href="{{ url_for('catalog') }}#list">Добавить ещё инструмент</a>
+      <button class="link-btn" formaction="{{ url_for('cart_clear') }}" formnovalidate>Очистить корзину</button></div>
+  </div>
+
+  <aside class="glass cart-summary">
+    <h3>Итого</h3>
+    <div class="sum" data-srow="units"><span>Единиц в заявке</span><b data-s="units">{{ quote.units }}</b></div>
+    <p class="muted"><small data-o="qty-note">{% if quote.qty_bp %}Скидка за количество {{ quote.qty_bp|pct }} применена: в заявке {{ quote.units }} ед.{% else %}Скидка {{ rules.qty_percent }} за количество действует от {{ rules.qty_units }} ед. в заявке; сейчас {{ quote.units }}.{% endif %}</small></p>
+    <div class="sum"><span>Аренда без скидок</span><b data-s="base">{{ quote.base|rubk }}</b></div>
+    <div class="sum" data-srow="dur" {{ 'hidden' if not quote.dur }}><span>Скидка за срок</span><b data-s="dur">−{{ quote.dur|rubk }}</b></div>
+    <div class="sum" data-srow="qty" {{ 'hidden' if not quote.qty }}><span>Скидка за количество</span><b data-s="qty">−{{ quote.qty|rubk }}</b></div>
+    <div class="sum" data-srow="corp" {{ 'hidden' if not quote.corp }}><span>Скидка для бизнеса</span><b data-s="corp">−{{ quote.corp|rubk }}</b></div>
+
+    {% if me %}
+    <label class="field">Купон
+      <select name="coupon" data-f="coupon">
+        <option value="0">Без купона</option>
+        {% for c in coupons %}<option value="{{ c.uc }}" data-type="{{ c.spec.type }}" data-bp="{{ c.spec.bp }}" data-amount-k="{{ c.spec.amount_k }}" data-min-k="{{ c.spec.min_k }}" {{ 'selected' if c.uc == uc }} {{ 'disabled' if not c.ok }}>
+          {{ c.coupon.name }} — {{ c.coupon|coupon_value }}{% if not c.ok %} ({{ c.why }}){% endif %}</option>{% endfor %}
+      </select>
+    </label>
+    <p class="muted"><small data-o="coupon-note">{% if not quote.coupon_ok %}Купон не применён: {{ quote.coupon_why }}.{% endif %}</small></p>
+    <div class="sum" data-srow="coupon" {{ 'hidden' if not quote.coupon }}><span>Скидка по купону</span><b data-s="coupon">−{{ quote.coupon|rubk }}</b></div>
+
+    <label class="field">Списать баллов <small class="muted">(на балансе {{ balance }}; 1 балл = 1 ₽)</small>
+      <div class="inline-rej"><input type="number" name="points" data-f="points" min="0" max="{{ quote.max_points }}" value="{{ points }}" inputmode="numeric">
+      <button type="button" class="chip-btn" data-points-max>Максимум</button></div>
+    </label>
+    <p class="muted"><small>Можно списать до <b data-o="points-max">{{ quote.max_points }}</b> баллов: не более {{ rules.points_max }} аренды после скидок, залог баллами не оплачивается.</small></p>
+    <div class="sum" data-srow="points" {{ 'hidden' if not quote.points_k }}><span>Оплата баллами</span><b data-s="points">−{{ quote.points_k|rubk }}</b></div>
+    {% else %}
+    <p class="muted"><small>Войдите в аккаунт, чтобы использовать купоны и баллы. Корзина сохранится.</small></p>
+    {% endif %}
+
+    <div class="sum total"><span>Аренда к оплате</span><b data-s="rent">{{ quote.rent|rubk }}</b></div>
+    <div class="sum"><span>Залог (отдельно)</span><b data-s="deposit">{{ quote.deposit|rubk }}</b></div>
+    <div class="sum grand"><span>Всего с залогом</span><b data-s="grand">{{ quote.grand|rubk }}</b></div>
+    <div class="sum save" data-srow="savings" {{ 'hidden' if not quote.savings }}><span>Ваша экономия</span><b data-s="savings">{{ quote.savings|rubk }}</b></div>
+
+    <button class="btn btn-lg btn-block" name="action" value="checkout" data-checkout {{ 'disabled' if has_problem }}>{{ 'Перейти к оформлению' if me else 'Войти и оформить заявку' }}</button>
+    <button class="btn btn-ghost btn-block nojs" name="action" value="save">Пересчитать</button>
+    {% if has_problem %}<small class="bad-text">Для выделенных позиций выбрано больше, чем свободно на эти даты.</small>{% endif %}
+  </aside>
+</form>
+{% endif %}
+</section>
+{% endblock %}

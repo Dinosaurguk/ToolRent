@@ -2,6 +2,7 @@
 :root{
   --bg:#0a0d12; --bg2:#10141b; --text:#f3f4f6; --muted:#98a0ad;
   --glass:rgba(255,255,255,.06); --line:rgba(255,255,255,.12);
+  --text:#cbd5e1; --muted:#94a3b8;
   --accent:#ffb020; --accent2:#ff7a00; --on-accent:#1a1204;
   --ok:#4ade80; --warn:#fbbf24; --bad:#f87171;
   --r-sm:12px; --r:22px; --r-lg:32px;
@@ -194,17 +195,6 @@ input[type=checkbox],input[type=radio]{width:auto}
 .sum{display:flex;justify-content:space-between;padding:8px 0}
 .sum b{font-size:18px}
 
-/* Боковая панель (CSS :target, без JavaScript) */
-.drawer{position:fixed;inset:0;z-index:100;visibility:hidden;pointer-events:none;transition:visibility 0s .5s}
-.drawer-bg{position:absolute;inset:0;background:rgba(0,0,0,.62);opacity:0;transition:opacity .5s var(--ease)}
-.drawer-panel{position:absolute;top:0;right:0;height:100%;width:min(440px,100%);display:flex;flex-direction:column;background:rgba(16,20,27,.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-left:1px solid var(--line);transform:translateX(100%);transition:transform .5s var(--ease)}
-.drawer:target{visibility:visible;pointer-events:auto;transition-delay:0s}
-.drawer:target .drawer-bg{opacity:1}
-.drawer:target .drawer-panel{transform:none}
-.drawer-head{display:flex;justify-content:space-between;align-items:center;padding:22px 24px;border-bottom:1px solid var(--line)}
-.drawer-head h2{font-size:22px;letter-spacing:-.02em}
-.drawer-body{flex:1;overflow:auto;padding:6px 24px}
-.drawer-foot{padding:18px 24px 22px;border-top:1px solid var(--line);display:grid;gap:4px}
 
 /* Статистика и B2B */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
@@ -369,3 +359,418 @@ textarea{resize:vertical}
   .acc{position:static}
   .acc-panel{left:12px;right:12px;width:auto;padding-top:6px}
 }
+
+/* ===== Корзина, калькулятор аренды, доступность ===== */
+.price-row{display:flex;gap:28px;flex-wrap:wrap;margin:18px 0 6px;align-items:flex-end}
+.rent-line h3{font-size:18px;margin-bottom:14px}
+.period{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.period input{min-width:0;width:100%}
+.period input{padding:10px 12px}
+.presets{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.chip-btn{border:1px solid var(--line);background:var(--glass);color:var(--text);padding:7px 14px;border-radius:99px;font:500 14px var(--font);cursor:pointer;transition:all .2s}
+.chip-btn:hover{border-color:rgba(255,255,255,.4)}
+.chip-btn.on{background:color-mix(in srgb,var(--accent) 20%,transparent);border-color:var(--accent);color:var(--accent)}
+.avail{padding:10px 14px;border-radius:var(--r-sm);font-size:14px;margin:6px 0;border:1px solid var(--line);color:var(--muted);background:rgba(255,255,255,.03)}
+.avail.ok{color:var(--ok);border-color:rgba(74,222,128,.35);background:rgba(74,222,128,.07)}
+.avail.bad{color:var(--bad);border-color:rgba(248,113,113,.4);background:rgba(248,113,113,.08)}
+.ci-sum{display:grid;gap:2px;margin-top:10px}
+.sum.grand{border-top:1px dashed var(--line);margin-top:4px;padding-top:10px}.sum.grand b{font-size:20px}
+.sum.save b{color:var(--ok)}
+.sum[hidden],.chip-btn[hidden]{display:none}
+.cart-wrap{padding-bottom:90px}
+.cart-grid{display:grid;grid-template-columns:1fr 380px;gap:20px;align-items:start}
+.cart-items{display:grid;gap:16px;min-width:0}
+.cart-item{display:grid;grid-template-columns:150px 1fr;gap:18px;padding:18px;border-radius:var(--r)}
+.cart-item.bad{border-color:rgba(248,113,113,.55)}
+.ci-img{display:grid;place-items:center;aspect-ratio:1;border-radius:var(--r-sm);background:radial-gradient(circle at 50% 35%,rgba(255,255,255,.12),transparent 70%)}
+.ci-img img{max-height:100%;object-fit:contain;padding:10px}
+.ci-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
+.ci-head h3{font-size:19px;letter-spacing:-.02em;line-height:1.2}
+.cart-summary{position:sticky;top:90px;padding:22px;display:grid;gap:10px;border-radius:var(--r-lg)}
+.cart-summary h3{font-size:20px;margin-top:4px}
+.pay-box{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;padding:16px;border:1px dashed var(--line);border-radius:var(--r-sm);margin:12px 0}
+.pay-box.ok{display:grid;border-style:solid;border-color:rgba(74,222,128,.4);background:rgba(74,222,128,.07);color:var(--ok)}
+.tool-more{display:grid;grid-template-columns:1fr 1fr;gap:40px;padding-block:20px 60px}
+.adv{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.adv>div{display:grid;gap:4px;padding:16px;border-radius:var(--r-sm)}
+.faq{display:grid;gap:8px}
+.faq details{border:1px solid var(--line);border-radius:var(--r-sm);padding:12px 16px;background:rgba(255,255,255,.03)}
+.faq summary{cursor:pointer;font-weight:600}.faq p{margin:10px 0 2px}
+.nojs{display:none}
+html:not(.js) .nojs{display:block}
+.tool .buy{padding:22px}
+@media (max-width:980px){
+  .cart-grid,.tool-more{grid-template-columns:1fr}.cart-summary{position:static}
+  .cart-item{grid-template-columns:90px 1fr}.adv{grid-template-columns:1fr}
+}
+
+/* Характеристики: стеклянная карточка «название | значение» */
+.specs-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.specs-card{padding:6px 22px;margin-bottom:8px;overflow:hidden}
+.spec-row{display:grid;grid-template-columns:minmax(120px,42%) 1fr;gap:20px;padding:15px 0;border-bottom:1px solid var(--line);align-items:baseline}
+.spec-row:last-child{border-bottom:0}
+.spec-k{color:var(--muted);font-size:15px;overflow-wrap:anywhere}
+.spec-v{font-weight:600;letter-spacing:-.005em;overflow-wrap:anywhere}
+.spec-note{display:block;color:var(--muted)}
+.spec-row:hover .spec-k{color:var(--text)}
+@media(max-width:560px){.specs-card{padding:4px 16px}.spec-row{grid-template-columns:1fr 1fr;gap:12px}}
+
+/* Редактор характеристик (админка) */
+.spec-edit{display:grid;gap:8px;margin:8px 0 12px}
+.spec-edit-head,.spec-edit-row{display:grid;grid-template-columns:1fr 1.4fr 40px;gap:10px;align-items:center}
+.spec-edit-row[hidden]{display:none}
+.icon-x{width:36px;height:36px;border-radius:50%;border:1px solid var(--line);background:var(--glass);color:var(--muted);font-size:20px;line-height:1;cursor:pointer;transition:all .2s}
+.icon-x:hover{color:var(--bad);border-color:var(--bad)}
+.spec-bulk{margin-top:12px}.spec-bulk summary{cursor:pointer;font-size:14px}.spec-bulk textarea{margin-top:8px;width:100%}
+.biz-req{display:grid;gap:10px;padding:14px;margin-bottom:14px;border-radius:var(--r-sm);border:1px solid color-mix(in srgb,var(--warn) 45%,transparent);background:color-mix(in srgb,var(--warn) 8%,transparent)}
+
+/* Цена для бизнеса: старая зачёркнута, новая и метка скидки */
+.price-old{color:var(--muted);text-decoration:line-through;text-decoration-thickness:1.5px;font-weight:500;font-size:.62em;margin-right:8px;white-space:nowrap}
+.price-new{white-space:nowrap}
+.disc-chip{display:inline-block;margin-left:8px;padding:2px 9px;border-radius:99px;font-size:.38em;font-weight:700;letter-spacing:.02em;vertical-align:middle;background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok);border:1px solid color-mix(in srgb,var(--ok) 40%,transparent)}
+.card-meta .price .disc-chip{font-size:11px}.card-meta .price .price-old{font-size:13px}
+.price-xl .price-old{font-size:.45em}.price-xl .disc-chip{font-size:.3em}
+
+/* Метка «демо» на переключателе и плашки режимов */
+.seg-tag{margin-left:5px;padding:1px 6px;border-radius:99px;font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;vertical-align:top;background:rgba(255,255,255,.14);color:var(--text)}
+.seg a.on .seg-tag{background:rgba(0,0,0,.18);color:var(--on-accent)}
+.notice.warn{background:color-mix(in srgb,var(--warn) 13%,#0a0d12)}
+.notice.preview{background:color-mix(in srgb,var(--accent) 12%,#0a0d12)}
+
+
+/* =========================================================
+   ToolRent: информационные страницы
+   ========================================================= */
+
+.info-page {
+    padding-top: 42px;
+    padding-bottom: 64px;
+}
+
+.info-page__heading {
+    max-width: 850px;
+    margin-bottom: 30px;
+}
+
+.info-page__back {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 22px;
+    color: var(--muted, #a1a1aa);
+    text-decoration: none;
+    transition: color .2s ease;
+}
+
+.info-page__back:hover {
+    color: var(--accent, #ff8a24);
+}
+
+.info-page__heading .lead {
+    max-width: 760px;
+    line-height: 1.7;
+}
+
+.info-page__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+}
+
+.info-page__card {
+    min-width: 0;
+    height: 100%;
+}
+
+.info-page__card h2 {
+    margin-top: 0;
+    margin-bottom: 12px;
+    font-size: 18px;
+    line-height: 1.4;
+}
+
+.info-page__card p {
+    margin-bottom: 0;
+    line-height: 1.75;
+}
+
+.info-page__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 28px;
+}
+
+
+/* =========================================================
+   ToolRent: футер
+   ========================================================= */
+
+.footer {
+    margin-top: 50px;
+    padding: 42px 0 18px;
+    border-top: 1px solid rgba(255, 255, 255, .09);
+    background: rgba(10, 12, 16, .72);
+}
+
+.footer__grid {
+    display: grid;
+    grid-template-columns: 1.1fr .8fr 1.2fr;
+    gap: 42px;
+    align-items: start;
+}
+
+.footer__logo {
+    display: inline-block;
+    margin-bottom: 14px;
+    color: #cbd5e1;
+    font-size: 25px;
+    font-weight: 800;
+    letter-spacing: -.7px;
+    text-decoration: none;
+}
+
+.footer__logo span {
+    color: var(--accent, #ff8a24);
+}
+
+.footer__title {
+    margin: 0 0 16px;
+    color: #cbd5e1;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.footer__description {
+    max-width: 360px;
+    margin: 0 0 16px;
+    color: var(--muted, #a1a1aa);
+    font-size: 13px;
+    line-height: 1.75;
+}
+
+.footer__links {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 11px;
+}
+
+.footer__links a {
+    color: var(--muted, #a1a1aa);
+    font-size: 13px;
+    text-decoration: none;
+    transition: color .2s ease;
+}
+
+.footer__links a:hover {
+    color: var(--accent, #ff8a24);
+}
+
+.footer__form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.footer__form input,
+.footer__form select,
+.footer__form textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    padding: 11px 13px;
+    border: 1px solid rgba(255, 255, 255, .12);
+    border-radius: 9px;
+    outline: none;
+    background: rgba(255, 255, 255, .045);
+    color: #cbd5e1;
+    font: inherit;
+    font-size: 13px;
+    transition: border-color .2s ease, background .2s ease;
+}
+
+.footer__form input:focus,
+.footer__form select:focus,
+.footer__form textarea:focus {
+    border-color: var(--accent, #ff8a24);
+    background: rgba(255, 255, 255, .07);
+}
+
+.footer__form textarea {
+    min-height: 82px;
+    resize: vertical;
+}
+
+.footer__form select option {
+    background: #17191f;
+    color: #cbd5e1;
+}
+
+.footer__form input::placeholder,
+.footer__form textarea::placeholder {
+    color: #858995;
+}
+
+.footer__form button {
+    align-self: flex-start;
+    max-width: 100%;
+}
+
+.footer__bottom {
+    display: flex;
+    justify-content: space-between;
+    gap: 15px;
+    margin-top: 34px;
+    padding-top: 17px;
+    border-top: 1px solid rgba(255, 255, 255, .08);
+    color: var(--muted, #858995);
+    font-size: 12px;
+}
+
+
+/* =========================================================
+   Адаптивность
+   ========================================================= */
+
+@media (max-width: 900px) {
+    .footer__grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 30px;
+    }
+
+    .footer__feedback {
+        grid-column: 1 / -1;
+        max-width: 600px;
+    }
+}
+
+@media (max-width: 600px) {
+    .info-page {
+        padding-top: 26px;
+        padding-bottom: 42px;
+    }
+
+    .info-page__grid {
+        grid-template-columns: 1fr;
+        gap: 13px;
+    }
+
+    .info-page__actions {
+        flex-direction: column;
+    }
+
+    .info-page__actions .btn {
+        width: 100%;
+        text-align: center;
+    }
+
+    .footer {
+        padding-top: 30px;
+    }
+
+    .footer__grid {
+        grid-template-columns: 1fr;
+        gap: 28px;
+    }
+
+    .footer__feedback {
+        grid-column: auto;
+    }
+
+    .footer__bottom {
+        flex-direction: column;
+        gap: 7px;
+    }
+}
+
+
+.footer__contacts {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.footer__contacts a {
+    color: #cbd5e1;
+    font-size: 13px;
+    text-decoration: none;
+    transition: color .2s ease;
+}
+
+.footer__contacts a span {
+    display: inline-block;
+    min-width: 65px;
+    color: var(--muted, #a1a1aa);
+}
+
+.footer__contacts a:hover {
+    color: var(--accent, #ff8a24);
+}
+
+.hero-video {
+  position: relative;
+  min-height: 540px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border-bottom: 1px solid rgba(255, 255, 255, .08);
+}
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 40%;
+  transform: scale(1.14);
+  z-index: 0;
+  filter: contrast(1.06) saturate(1.12);
+}
+.hero-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(10, 13, 18, .72) 0%, rgba(10, 13, 18, .22) 55%, rgba(10, 13, 18, .12) 100%),
+              linear-gradient(180deg, rgba(10, 13, 18, .2) 0%, rgba(10, 13, 18, .95) 100%);
+  z-index: 1;
+}
+.hero-inner {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 1380px;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+}
+.hero-title {
+  margin: 0;
+  max-width: 680px;
+  font-size: clamp(38px, 4.8vw, 60px);
+  line-height: 1.08;
+  font-weight: 800;
+  letter-spacing: -.025em;
+  color: #cbd5e1;
+  text-shadow: 0 6px 28px rgba(0, 0, 0, .75);
+}
+.hero-title span {
+  color: #ffb020;
+}
+.hero-actions {
+  margin-top: 28px;
+  gap: 14px;
+}
+.hero-actions .btn-ghost {
+  background: rgba(10, 13, 18, .55);
+  backdrop-filter: blur(8px);
+}
+
+.tool-photo img,.card-img img,.ci-img img{border-radius:16px;object-fit:contain}
+.ci-img img{padding:0}
+.wrap,.topbar,.footer{position:relative;z-index:1}
+
+.topbar{z-index:1000}
+.acc-panel{z-index:1001}
+

@@ -4,12 +4,13 @@
 <section class="hero hero-sm"><div class="glow g1"></div>
   <div class="wrap">
     <h1 class="h-hero">Аренда для строительных организаций</h1>
-    <p class="lead muted">Один аккаунт для частных и бизнес-заявок. Подключите реквизиты организации, и история заказов, баллы и купоны останутся с вами.</p>
+    <p class="lead muted">Один аккаунт для частных и бизнес-заявок. Отправьте реквизиты организации: после подтверждения администратором откроется бизнес-статус со скидкой {{ biz_pct }} на аренду, а история заказов, баллы и купоны останутся с вами.</p>
     <div class="row" style="margin-top:28px">
       {% if not me %}<a class="btn btn-lg" href="{{ url_for('register') }}">Создать аккаунт</a>
       {% elif is_b2b %}<a class="btn btn-lg" href="{{ url_for('profile', section='business') }}">Бизнес-профиль</a>
       {% elif is_admin %}<a class="btn btn-lg" href="{{ url_for('admin_home') }}">Админ-панель</a>
-      {% else %}<a class="btn btn-lg" href="{{ url_for('profile', section='business') }}">Подключить бизнес-профиль</a>{% endif %}
+      {% elif b2b_pending %}<a class="btn btn-lg btn-ghost" href="{{ url_for('profile', section='business') }}">Заявка на рассмотрении</a>
+      {% else %}<a class="btn btn-lg" href="{{ url_for('profile', section='business') }}">Подать заявку на бизнес-статус</a>{% endif %}
       <a class="btn btn-ghost btn-lg" href="{{ url_for('catalog') }}">Каталог</a>
     </div>
   </div>
@@ -29,8 +30,9 @@
   <h2 class="h-xl">Как это работает</h2>
   <div class="steps">
     <div class="glass step"><h3>1. Аккаунт</h3><p class="muted">Зарегистрируйтесь и подтвердите почту по ссылке из письма.</p></div>
-    <div class="glass step"><h3>2. Реквизиты</h3><p class="muted">В личном кабинете укажите тип организации, название, ИНН, КПП и юридический адрес. Роль меняется на бизнес-клиента, аккаунт остаётся прежним.</p></div>
-    <div class="glass step"><h3>3. Заявка</h3><p class="muted">Одна заявка может включать несколько позиций с разным количеством и сроками. Администратор обрабатывает каждую позицию отдельно.</p></div>
+    <div class="glass step"><h3>2. Реквизиты</h3><p class="muted">В личном кабинете укажите тип организации, название, ИНН, КПП и юридический адрес. Заявка уходит администратору на проверку.</p></div>
+    <div class="glass step"><h3>3. Подтверждение</h3><p class="muted">Администратор подтверждает бизнес-статус и вы получаете уведомление. Режим «Бизнесу» остаётся включённым, скидка {{ biz_pct }} действует на всю аренду, залог без скидки.</p></div>
+    <div class="glass step"><h3>4. Заявка</h3><p class="muted">Одна заявка может включать несколько позиций с разным количеством и сроками. Администратор обрабатывает каждую позицию отдельно.</p></div>
   </div>
 </div></section>
 
@@ -41,4 +43,22 @@
   {% if org.kpp %}<dt>КПП</dt><dd>{{ org.kpp }}</dd>{% endif %}<dt>Юридический адрес</dt><dd>{{ org.legal_address }}</dd></dl>
 </div></div></section>
 {% endif %}
+<section class="section">
+  <div class="wrap">
+    <h2 class="h-lg">Документы и формы</h2>
+    <p class="muted">Скачайте шаблоны, заполните и прикрепите их в разделе «Бизнес-профиль» личного кабинета.</p>
+    <div class="grid grid-2" style="margin-top:20px">
+      <div class="glass p-card">
+        <div class="row between"><strong>Карточка организации</strong><span class="pill s-done">PDF</span></div>
+        <p class="muted">Обязательный бланк с реквизитами компании для заключения договора аренды.</p>
+        <div><a class="btn btn-sm btn-ghost" href="{{ url_for('download_template_doc', name='01_Kartochka_organizacii_ToolRent.pdf') }}">Скачать шаблон</a></div>
+      </div>
+      <div class="glass p-card">
+        <div class="row between"><strong>Доверенность на получение оборудования</strong><span class="pill s-done">PDF</span></div>
+        <p class="muted">Обязательная доверенность на представителя, получающего инструмент на складе или объекте.</p>
+        <div><a class="btn btn-sm btn-ghost" href="{{ url_for('download_template_doc', name='02_Doverennost_na_poluchenie_oborudovaniya_ToolRent.pdf') }}">Скачать шаблон</a></div>
+      </div>
+    </div>
+  </div>
+</section>
 {% endblock %}

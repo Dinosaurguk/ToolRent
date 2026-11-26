@@ -13,6 +13,7 @@ Python + Flask + Microsoft Access (pyodbc). JavaScript не использует
 """
 import hashlib
 import hmac
+import json
 import os
 import platform
 import queue
@@ -28,7 +29,7 @@ from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 from email.message import EmailMessage
 from functools import wraps
 
-from flask import (Flask, Response, abort, flash, g, redirect, render_template,
+from flask import (Flask, Response, abort, flash, g, has_request_context, jsonify, redirect, render_template,
                    request, send_from_directory, session, url_for)
 from markupsafe import Markup, escape
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -52,18 +53,29 @@ def _env(name, default=None):
 
 POINTS_PERCENT = Decimal("5")            # начисление баллов: % от стоимости аренды (залог не входит)
 SAVINGS_COEF = Decimal("2.325")          # коэффициент «Оценочной выгоды от аренды» (меняется только здесь)
-try:
-    POINT_RATE = Decimal(_env("TOOLRENT_POINT_RUB_RATE")) if _env("TOOLRENT_POINT_RUB_RATE") else None
+POINTS_MAX_PERCENT = Decimal("30")       # баллами можно оплатить не более 30% аренды после скидок (залог не оплачивается)
+try:                                     # 1 балл = 1 рубль; для другого курса задайте TOOLRENT_POINT_RUB_RATE
+    POINT_RUB_RATE = Decimal(_env("TOOLRENT_POINT_RUB_RATE", "1"))
 except InvalidOperation:
-    POINT_RATE = None                    # курс не задан или задан неверно — списание баллов выключено
-if POINT_RATE is not None and POINT_RATE <= 0:
-    POINT_RATE = None
+    POINT_RUB_RATE = Decimal("1")
+if POINT_RUB_RATE <= 0:
+    POINT_RUB_RATE = Decimal("1")
+
+# --- Правила скидок: единое место настройки, браузер получает эти же значения из Flask ---
+QUANTITY_DISCOUNT_MIN_UNITS = 15         # скидка за количество: суммарно физических единиц во всей заявке
+QUANTITY_DISCOUNT_PERCENT = Decimal("3") # ...на всю стоимость аренды (залог не участвует)
+DURATION_TIERS = []                      # скидка за срок, ступени (от_суток, процент) для каждой позиции отдельно.
+#   Проценты не согласованы, поэтому ступеней пока нет. Пример: [(7, Decimal("5")), (14, Decimal("8")), (30, Decimal("12"))]
+CORPORATE_DISCOUNT_PERCENT = Decimal("3")  # скидка для бизнеса: на всю аренду (залог не скидывается), только для подтверждённых бизнес-клиентов в режиме «Бизнесу»
+BIZ_MARK = "бизнес-скидка"                 # пометка в истории заявки: скидка была применена при оформлении
+COUPON_PERCENT, COUPON_FIXED = "Процент", "Фиксированная"   # типы купонов в базе
 
 DURATIONS = [1, 3, 7, 14, 30]
 MAX_RENT_DAYS = 365
 MAX_CART_LINES = 30
 TOKEN_HOURS = {"email": 24, "reset": 1}
 MAIL_RETRY_SECONDS = (60, 300, 1800)     # повторные попытки отправки письма
+ORDER_LOCK = threading.RLock()           # одновременные заявки на один инструмент обрабатываются по очереди
 
 ROLE_USER, ROLE_B2B, ROLE_ADMIN = "user", "b2b", "admin"
 
@@ -72,7 +84,12 @@ P_NEW, P_OK, P_NO, P_OUT, P_BACK, P_CANCEL = (
     "На рассмотрении", "Одобрена", "Отклонена", "Выдана", "Возвращена", "Отменена")
 O_NEW, O_WORK, O_RENT, O_DONE, O_NO, O_CANCEL = (
     "На рассмотрении", "В обработке", "В аренде", "Завершена", "Отклонена", "Отменена")
-RESERVING = (P_OK, P_OUT)                # статусы, при которых инструмент занят
+# Физические экземпляры: состояние экземпляра и статус его назначения на позицию заявки
+STATE_OK, STATE_CHECK, STATE_REPAIR, STATE_OFF = "Доступен", "На проверке", "В ремонте", "Списан"
+INSTANCE_STATES = (STATE_OK, STATE_CHECK, STATE_REPAIR, STATE_OFF)
+A_ASSIGNED, A_OUT, A_BACK, A_CANCEL = "Назначен", "Выдан", "Возвращён", "Отменён"
+ARTICLE_RE = re.compile(r"^([A-Z]{3})-(\d{6})$")
+RESERVING = (P_NEW, P_OK, P_OUT)         # статусы, при которых инструмент занят (заявка, отправленная на рассмотрение, уже резервирует)
 DEAD = (P_NO, P_CANCEL)                  # позиции, которые не входят в стоимость
 
 app = Flask(__name__, static_folder=None, template_folder=os.path.join(BASE_DIR, "templates"))
@@ -124,6 +141,10 @@ COL = {
     "ЛимитИспользований": "limit", "ДатаВыдачи": "issued", "Использован": "used",
     "ДатаИспользования": "used_at", "Заголовок": "title", "Текст": "body", "Тип": "kind",
     "Прочитано": "is_read", "ТокенХеш": "token_hash", "СрокДействия": "expires", "ТипДействия": "action",
+    "Артикул": "article", "Состояние": "state", "ИнвентарныйКод": "code_inv", "ДатаДобавления": "added", "Примечание": "note",
+    "КодВыдачи": "issue_code", "ОценкаКачества": "grade", "ДатаВозврата": "returned_at", "КтоОсмотрел_id_user": "inspector",
+    "Событие": "event", "СостояниеДо": "state_before", "СостояниеПосле": "state_after", "ИнвентарныйКодНаМомент": "code_at",
+    "ДатаСобытия": "event_at",
 }
 
 
@@ -248,8 +269,82 @@ def clean_text(v):
 @app.template_filter("rub")
 def rub(value):
     v = money(value)
-    s = f"{int(v):,}".replace(",", "\u00a0") if v == v.to_integral() else f"{v:,.2f}".replace(",", "\u00a0")
+    s = f"{int(v):,}".replace(",", "\u00a0") if v == v.to_integral() else f"{v:,.2f}".replace(",", "\u00a0").replace(".", ",")
     return s + "\u00a0₽"
+
+
+def parse_specs(text):
+    """Характеристики из Access → список (название, значение). Понимает «Название: значение» (по строке),
+    «Название;значение», а также чередование строк «название / значение» без двоеточий.
+    Строка без названия возвращается как ("", текст) и выводится на всю ширину."""
+    raw = clean_text(text)
+    if not raw.strip():
+        return []
+    if "\n" not in raw and raw.count(";") >= 1 and ":" in raw:
+        raw = raw.replace(";", "\n")
+    lines = [re.sub(r"^[•*]\s*|^[-–—]\s+", "", l.strip()) for l in raw.split("\n")]
+    lines = [l for l in lines if l]
+    rows = []
+    if any(":" in l for l in lines):
+        for l in lines:
+            key, sep, val = l.partition(":")
+            key, val = key.strip(), val.strip()
+            if sep and key and len(key) <= 70:
+                rows.append([key, val])
+            elif rows and rows[-1][1] == "" and not sep:      # «Название:» и значение на следующей строке
+                rows[-1][1] = l
+            else:
+                rows.append(["", l])
+    elif any("\t" in l for l in lines):
+        for l in lines:
+            key, _, val = l.partition("\t")
+            rows.append([key.strip(), val.strip()] if val.strip() else ["", l])
+    elif len(lines) >= 2 and len(lines) % 2 == 0:             # название и значение на соседних строках
+        rows = [[lines[i], lines[i + 1]] for i in range(0, len(lines), 2)]
+    else:
+        rows = [["", l] for l in lines]
+    return [(k, v or "—") if k else ("", v) for k, v in rows]
+
+
+def join_specs(keys, vals):
+    """Строки формы редактора → текст для Access: «Название: значение», по строке на характеристику."""
+    out = []
+    for k, v in zip(keys, vals):
+        k = re.sub(r"[:\r\n]+", " ", k or "").strip()
+        v = re.sub(r"\s*[\r\n]+\s*", " ", v or "").strip()
+        if k and v:
+            out.append(f"{k}: {v}")
+        elif v:
+            out.append(v)
+    return "\n".join(out)
+
+
+def current_mode():
+    """Режим просмотра: частный или бизнес. У подтверждённого бизнес-клиента по умолчанию бизнес."""
+    m = session.get("mode")
+    if m in ("b2c", "b2b"):
+        return m
+    return "b2b" if g.get("user") and g.user["role"] == ROLE_B2B else "b2c"
+
+
+def is_biz_real():
+    """Скидка для бизнеса действует только у подтверждённого бизнес-клиента в режиме «Бизнесу»."""
+    return bool(g.get("user") and g.user["role"] == ROLE_B2B and current_mode() == "b2b")
+
+
+def corp_bp_now():
+    return _bp(CORPORATE_DISCOUNT_PERCENT) if has_request_context() and is_biz_real() else 0
+
+
+@app.template_filter("price_html")
+def price_html(value):
+    """В режиме «Бизнесу» старая цена зачёркнута, рядом цена со скидкой и метка скидки."""
+    if not has_request_context() or current_mode() != "b2b":
+        return rub(value)
+    k, bp = kop(value), _bp(CORPORATE_DISCOUNT_PERCENT)
+    new = from_k(k - _off(k, bp))
+    return Markup(f'<span class="price-old">{escape(rub(value))}</span><span class="price-new">{escape(rub(new))}</span>'
+                  f'<span class="disc-chip">−{escape(fmt_pct(bp))}</span>')
 
 
 @app.template_filter("d")
@@ -313,6 +408,7 @@ def csrf_token():
     return session["_csrf"]
 
 
+app.jinja_env.globals["csrf_token"] = csrf_token
 app.jinja_env.globals["csrf_field"] = lambda: Markup(
     f'<input type="hidden" name="csrf" value="{escape(csrf_token())}">')
 
@@ -451,6 +547,9 @@ CATEGORY_IMG_WORDS = [        # иначе — по началу слов в н�
     (("перфор",), "perforator.svg"), (("дрел", "шуруп"), "drill.svg"),
     (("шлиф", "резк", "болгар", "пил"), "grinder.svg"), (("генер", "электростан"), "generator.svg"),
     (("нивел", "лазер", "измер"), "laser.svg"), (("леса", "подмост"), "scaffold.svg"),
+    (("маляр",), "paint.svg"), (("штукатур",), "plaster.svg"),
+    (("газов", "свароч"), "welding.svg"), (("специал",), "special.svg"),
+    (("электроинстр",), "powertool.svg"),
 ]
 DEFAULT_IMG = "perforator.svg"
 
@@ -492,14 +591,15 @@ def tool_img(photo, cat_id):
     return cat["img"] if cat else DEFAULT_IMG
 
 
-def reserved_map(start, end, t=None, exclude_rent=None):
-    """{id_tool: занято штук} для одобренных и выданных позиций, пересекающихся с периодом."""
+def reserved_map(start, end, t=None, exclude_rent=None, exclude_item=None):
+    """{id_tool: занято штук}: позиции «На рассмотрении», «Одобрена», «Выдана», пересекающиеся с периодом.
+    Каждая позиция считается один раз при любом из этих статусов, поэтому одобрение не резервирует повторно."""
     rows = (t.q if t else q)(
-        "SELECT [id_tool], [id_rent], [Количество], [ДатаНачала], [ДатаОкончания] FROM [ПозицияБронирования] "
-        "WHERE [Статус] IN (?, ?) AND [ДатаНачала] <= ? AND [ДатаОкончания] >= ?", [P_OK, P_OUT, end, start])
+        "SELECT [id_item], [id_tool], [id_rent], [Количество], [ДатаНачала], [ДатаОкончания] FROM [ПозицияБронирования] "
+        "WHERE [Статус] IN (?, ?, ?) AND [ДатаНачала] <= ? AND [ДатаОкончания] >= ?", [*RESERVING, end, start])
     out = {}
     for r in rows:
-        if exclude_rent and r["id_rent"] == exclude_rent:
+        if (exclude_rent and r["id_rent"] == exclude_rent) or (exclude_item and r["id_item"] == exclude_item):
             continue
         out[r["id_tool"]] = out.get(r["id_tool"], 0) + int(r["qty"] or 0)
     return out
@@ -515,22 +615,53 @@ def blocked_tools(start, end, t=None):
     return out
 
 
-def tool_free(t, tool_id, stock, start, end, exclude_rent=None):
+def tool_free(t, tool_id, stock, start, end, exclude_rent=None, exclude_item=None):
     if tool_id in blocked_tools(start, end, t):
         return 0
-    return max(int(stock) - reserved_map(start, end, t, exclude_rent).get(tool_id, 0), 0)
+    return max(int(stock) - reserved_map(start, end, t, exclude_rent, exclude_item).get(tool_id, 0), 0)
+
+
+def capacity_map(t=None):
+    """{id_tool: (доступных к аренде, всего не списанных)} по таблице ФизическийЭкземпляр."""
+    out = {}
+    for r in (t.q if t else q)("SELECT [id_tool], [Состояние] FROM [ФизическийЭкземпляр]"):
+        a, o = out.get(r["id_tool"], (0, 0))
+        if r["state"] != STATE_OFF:
+            o += 1
+        if r["state"] == STATE_OK:
+            a += 1
+        out[r["id_tool"]] = (a, o)
+    return out
+
+
+def _caps():
+    if has_request_context():
+        if "caps" not in g:
+            g.caps = capacity_map()
+        return g.caps
+    return capacity_map()
+
+
+def tool_capacity(t, row):
+    """Сколько экземпляров модели можно сдавать (на проверке, в ремонте и списанные не входят).
+    Если у модели ещё нет экземпляров, используется КоличествоНаСкладе."""
+    a = capacity_map(t).get(row["id_tool"])
+    return int(row["stock"] or 0) if a is None else a[0]
 
 
 def build_tool(r, reserved=None, blocked=None):
-    stock = int(r["stock"] or 0)
+    cap = _caps().get(r["id_tool"])
+    stock = int(r["stock"] or 0) if cap is None else cap[0]
     free = stock if reserved is None else max(stock - reserved.get(r["id_tool"], 0), 0)
     if blocked and r["id_tool"] in blocked:
         free = 0
     return {"id": r["id_tool"], "brand": get_brands().get(r["id_brand"], ""), "brand_id": r["id_brand"],
             "name": clean_text(r["name"]), "cat": r["id_category"], "price": money(r["price"]),
-            "deposit": money(r["deposit"]), "stock": stock, "qty": free,
+            "deposit": money(r["deposit"]), "stock": stock, "owned": stock if cap is None else cap[1], "qty": free,
+            "article": clean_text(r["article"]),
             "img": tool_img(r["photo"], r["id_category"]), "photo": clean_text(r["photo"]),
-            "desc": clean_text(r["descr"]), "specs": clean_text(r["specs"]), "active": bool(r["active"])}
+            "desc": clean_text(r["descr"]), "specs": clean_text(r["specs"]), "specs_rows": parse_specs(r["specs"]),
+            "active": bool(r["active"])}
 
 
 TOOL_SORT = {"": lambda t: t["id"], "id_desc": lambda t: -t["id"], "price_asc": lambda t: (t["price"], t["id"]),
@@ -572,6 +703,419 @@ def get_tool(tool_id, include_inactive=False):
 
 
 # ---------------------------------------------------------------------------
+# Расчёт стоимости аренды. Все суммы считаются в целых копейках, округление «от половины вверх».
+# Тот же алгоритм реализован в script.js: браузер показывает результат мгновенно, а окончательные
+# суммы при добавлении в корзину и при оформлении заявки всегда считает Flask.
+# ---------------------------------------------------------------------------
+def kop(x):
+    return int((D(x) * 100).to_integral_value(ROUND_HALF_UP))
+
+
+def from_k(k):
+    return Decimal(int(k)) / 100
+
+
+def _bp(percent):
+    """Процент → сотые доли процента (3 % → 300)."""
+    return int((D(percent) * 100).to_integral_value(ROUND_HALF_UP))
+
+
+def _off(amount_k, bp):
+    """Размер скидки bp (сотых процента) от суммы в копейках."""
+    return (amount_k * bp + 5000) // 10000
+
+
+def duration_bp(days):
+    bp = 0
+    for d, p in sorted(DURATION_TIERS):
+        if days >= d:
+            bp = _bp(p)
+    return bp
+
+
+def rent_config(preview=False):
+    """Правила расчёта для браузера (единый источник — настройки в начале server.py)."""
+    return {"qty_min_units": QUANTITY_DISCOUNT_MIN_UNITS, "qty_bp": _bp(QUANTITY_DISCOUNT_PERCENT),
+            "tiers": [[d, _bp(p)] for d, p in sorted(DURATION_TIERS)], "corp_bp": _bp(CORPORATE_DISCOUNT_PERCENT) if preview else corp_bp_now(),
+            "points_max_bp": _bp(POINTS_MAX_PERCENT), "rate_k": kop(POINT_RUB_RATE), "max_days": MAX_RENT_DAYS,
+            "accrual_percent": int(POINTS_PERCENT)}
+
+
+def coupon_kind(c):
+    return "percent" if c["disc_type"] == COUPON_PERCENT else "fixed"      # прежнее значение «Сумма» читается как фиксированная
+
+
+def coupon_spec(c):
+    return {"type": coupon_kind(c), "bp": _bp(c["amount"]), "amount_k": kop(c["amount"]), "min_k": kop(c["min_sum"])}
+
+
+def calc_quote(lines, coupon=None, points=0, balance=None, enforce_max=True, corp_bp=None):
+    """lines: [{price_k, deposit_k, qty, days}] → скидки и итоги в копейках.
+    Порядок: срок (по позиции) → количество (на всю заявку) → корпоративная → купон → баллы. Залог не скидывается."""
+    units = sum(l["qty"] for l in lines)
+    qbp = _bp(QUANTITY_DISCOUNT_PERCENT) if units >= QUANTITY_DISCOUNT_MIN_UNITS else 0
+    cbp = corp_bp_now() if corp_bp is None else corp_bp
+    out, tot = [], dict(base=0, dur=0, qty=0, corp=0, rent=0, deposit=0)
+    for l in lines:
+        base = l["price_k"] * l["qty"] * l["days"]
+        dbp = duration_bp(l["days"])
+        dur = _off(base, dbp)
+        a = base - dur
+        qd = _off(a, qbp)
+        b = a - qd
+        cp = _off(b, cbp)
+        rent = b - cp
+        dep = l["deposit_k"] * l["qty"]
+        out.append({"base": base, "dur_bp": dbp, "dur": dur, "qty_disc": qd, "corp": cp, "rent": rent, "deposit": dep})
+        for k, v in (("base", base), ("dur", dur), ("qty", qd), ("corp", cp), ("rent", rent), ("deposit", dep)):
+            tot[k] += v
+    auto_rent = tot["rent"]
+    coupon_k, coupon_ok, coupon_why = 0, True, ""
+    if coupon:
+        if auto_rent < coupon.get("min_k", 0):
+            coupon_ok, coupon_why = False, "сумма аренды меньше минимальной для купона"
+        elif coupon["type"] == "percent":
+            coupon_k = _off(auto_rent, coupon["bp"])
+        else:
+            coupon_k = min(coupon["amount_k"], auto_rent)
+    after_coupon = auto_rent - coupon_k
+    rate_k = kop(POINT_RUB_RATE)
+    max_points = (after_coupon * _bp(POINTS_MAX_PERCENT) // 10000) // rate_k       # не более 30 % аренды после скидок
+    if enforce_max:
+        cap = min(max_points, balance) if balance is not None else max_points
+    else:
+        cap = min(after_coupon // rate_k, balance) if balance is not None else after_coupon // rate_k
+    used = max(0, min(int(points or 0), cap))
+    points_k = used * rate_k
+    rent_total = after_coupon - points_k
+    return {"lines": out, "units": units, "qty_bp": qbp, "corp_bp": cbp, "base": tot["base"], "dur": tot["dur"],
+            "qty": tot["qty"], "corp": tot["corp"], "auto_rent": auto_rent, "coupon": coupon_k, "coupon_ok": coupon_ok,
+            "coupon_why": coupon_why, "max_points": cap, "points": used, "points_k": points_k, "rent": rent_total,
+            "deposit": tot["deposit"], "grand": rent_total + tot["deposit"], "savings": tot["base"] - rent_total}
+
+
+@app.template_filter("rubk")
+def rub_k(k):
+    return rub(from_k(k or 0))
+
+
+@app.template_filter("coupon_value")
+def coupon_value(c):
+    """«10%» или «500 ₽» для купона любого происхождения (Процент / Фиксированная / прежняя «Сумма»)."""
+    return fmt_pct(_bp(c["amount"])) if c["disc_type"] == COUPON_PERCENT else rub(c["amount"])
+
+
+@app.template_filter("pct")
+def fmt_pct(bp):
+    v = Decimal(int(bp or 0)) / 100
+    txt = f"{v:f}"
+    if "." in txt:
+        txt = txt.rstrip("0").rstrip(".")
+    return txt.replace(".", ",") + "%"
+
+
+# ---------------------------------------------------------------------------
+# Доступность на период (учитывает заявки на рассмотрении, одобренные и выданные позиции, блокировки)
+# ---------------------------------------------------------------------------
+def _tool_rows(ids, t=None):
+    ids = list(ids)
+    if not ids:
+        return {}
+    rows = (t.q if t else q)(f"SELECT * FROM [Инструмент] WHERE [id_tool] IN ({', '.join(['?'] * len(ids))})", ids)
+    return {r["id_tool"]: r for r in rows}
+
+
+def lines_availability(items, t=None, rows=None):
+    """items: [{tool_id, qty, start, end}] → для каждой позиции {free, ok, message}.
+    Из свободного остатка вычитаются другие позиции этой же заявки на пересекающиеся даты."""
+    rows = rows or _tool_rows({i["tool_id"] for i in items}, t)
+    res = []
+    for idx, it in enumerate(items):
+        r = rows.get(it["tool_id"])
+        if not r or not r["active"]:
+            res.append({"free": 0, "stock": 0, "ok": False, "message": "Инструмент недоступен для аренды."})
+            continue
+        cap = tool_capacity(t, r)
+        db_free = tool_free(t, it["tool_id"], cap, it["start"], it["end"])
+        others = sum(o["qty"] for j, o in enumerate(items) if j != idx and o["tool_id"] == it["tool_id"]
+                     and o["start"] <= it["end"] and o["end"] >= it["start"])
+        free = max(db_free - others, 0)
+        ok = it["qty"] <= free
+        if ok:
+            msg = ""
+        elif free == 0:
+            msg = "На выбранный период свободных экземпляров нет."
+        else:
+            msg = f"Доступно только {free} шт. на выбранный период" + (" с учётом других позиций заявки." if others else ".")
+        res.append({"free": free, "stock": cap, "ok": ok, "message": msg})
+    return res
+
+
+# ---------------------------------------------------------------------------
+# Физические экземпляры: серии артикулов, инвентарные коды, назначение, выдача, приёмка, списание.
+# Резервирование остаётся по количеству (позиции «На рассмотрении», «Одобрена», «Выдана»); доступный склад модели —
+# число экземпляров в состоянии «Доступен». Количество при выдаче и возврате не списывается второй раз:
+# КоличествоНаСкладе уменьшается только при списании экземпляра.
+# ---------------------------------------------------------------------------
+def next_series(t):
+    """Следующая серия артикулов: AAA → AAB → … → AAZ → ABA …"""
+    used = []
+    for r in t.q("SELECT [Артикул] FROM [Инструмент]"):
+        m = ARTICLE_RE.match((r["article"] or "").strip().upper())
+        if m:
+            used.append(m.group(1))
+    if not used:
+        return "AAA"
+    chars = list(max(used))
+    for i in (2, 1, 0):
+        if chars[i] != "Z":
+            chars[i] = chr(ord(chars[i]) + 1)
+            return "".join(chars)
+        chars[i] = "A"
+    raise ValueError("Серии артикулов закончились.")
+
+
+def tool_series(t, tool):
+    """Серия модели; пустой артикул заполняется автоматически, посторонний формат не трогаем (возвращает None)."""
+    art = (tool["article"] or "").strip().upper()
+    if not art:
+        art = f"{next_series(t)}-000000"
+        t.update("Инструмент", "id_tool", tool["id_tool"], {"Артикул": art})
+    m = ARTICLE_RE.match(art)
+    return m.group(1) if m else None
+
+
+def instance_log(t, inst_id, event, before, after, assign_id=None, code=None, grade=None, comment=None, who=None):
+    t.insert("ЖурналЭкземпляров", {
+        "id_instance": inst_id, "id_instance_rent": assign_id, "ИнвентарныйКодНаМомент": code, "Событие": event,
+        "СостояниеДо": before, "СостояниеПосле": after, "ОценкаКачества": grade,
+        "Комментарий": (comment or "")[:255] or None, "ДатаСобытия": now(), "КтоИзменил_id_user": who})
+
+
+def new_instance(t, tool_id, series, who=None):
+    """Новый экземпляр с наименьшим свободным кодом серии (освобождённые коды списанных используются повторно)."""
+    used = {i["code_inv"] for i in t.q("SELECT [ИнвентарныйКод] FROM [ФизическийЭкземпляр] WHERE [id_tool] = ?", [tool_id]) if i["code_inv"]}
+    n = 1
+    while f"{series}-{n:06d}" in used:
+        n += 1
+    code = f"{series}-{n:06d}"
+    iid = t.insert("ФизическийЭкземпляр", {"id_tool": tool_id, "ИнвентарныйКод": code, "Состояние": STATE_OK,
+                                          "ДатаДобавления": now(), "Примечание": None})
+    instance_log(t, iid, "Добавлен", None, STATE_OK, code=code, who=who)
+    return iid
+
+
+def sync_alive_stock(t, tool_id):
+    n = sum(1 for i in t.q("SELECT [Состояние] FROM [ФизическийЭкземпляр] WHERE [id_tool] = ?", [tool_id]) if i["state"] != STATE_OFF)
+    t.update("Инструмент", "id_tool", tool_id, {"КоличествоНаСкладе": n})
+
+
+def sync_tool(t, tool_id, who=None):
+    """Назначает серию, создаёт недостающие экземпляры по КоличествоНаСкладе (повторный запуск дубликатов не создаёт)."""
+    tool = t.one("SELECT * FROM [Инструмент] WHERE [id_tool] = ?", [tool_id])
+    if not tool:
+        return 0
+    series = tool_series(t, tool)
+    if not series:
+        print(f"[ToolRent] Артикул «{tool['article']}» модели №{tool_id} не в формате AAA-000000: экземпляры не созданы.")
+        return 0
+    alive = [i for i in t.q("SELECT * FROM [ФизическийЭкземпляр] WHERE [id_tool] = ?", [tool_id]) if i["state"] != STATE_OFF]
+    want, created = int(tool["stock"] or 0), 0
+    for _ in range(max(want - len(alive), 0)):
+        new_instance(t, tool_id, series, who)
+        created += 1
+    if want < len(alive):                           # уменьшить количество можно только списанием экземпляров
+        t.update("Инструмент", "id_tool", tool_id, {"КоличествоНаСкладе": len(alive)})
+    return created
+
+
+def startup_sync():
+    try:
+        with ORDER_LOCK, Tx() as t:
+            n = sum(sync_tool(t, r["id_tool"]) for r in t.q("SELECT [id_tool] FROM [Инструмент]"))
+        if n:
+            print(f"[ToolRent] Созданы физические экземпляры: {n}.")
+    except Exception as e:
+        print("[ToolRent] Синхронизация физических экземпляров не выполнена:", e)
+
+
+def has_instances(t, tool_id):
+    return bool(t.one("SELECT [id_instance] FROM [ФизическийЭкземпляр] WHERE [id_tool] = ?", [tool_id]))
+
+
+def pick_instances(t, tool_id, start, end, qty, exclude_item=None, exclude_ids=()):
+    """Свободные на период экземпляры в состоянии «Доступен». Экземпляр не назначается на две пересекающиеся аренды;
+    выданный и не возвращённый считается занятым (в том числе после срока). Берутся те, что лучше «стыкуются» по датам."""
+    insts = [i for i in t.q("SELECT * FROM [ФизическийЭкземпляр] WHERE [id_tool] = ? AND [Состояние] = ?", [tool_id, STATE_OK])
+             if i["id_instance"] not in exclude_ids]
+    ids = {i["id_instance"] for i in insts}
+    items = {p["id_item"]: p for p in t.q("SELECT * FROM [ПозицияБронирования] WHERE [id_tool] = ? AND [Статус] IN (?, ?)", [tool_id, P_OK, P_OUT])}
+    busy, day = {}, today()
+    for a in t.q("SELECT * FROM [ЭкземплярыПозиции] WHERE [Статус] IN (?, ?)", [A_ASSIGNED, A_OUT]):
+        p = items.get(a["id_item"])
+        if a["id_instance"] not in ids or not p or p["id_item"] == exclude_item:
+            continue
+        s_, e_ = as_dt(p["start"]), as_dt(p["end"])
+        busy.setdefault(a["id_instance"], []).append((s_, max(e_, day) if a["status"] == A_OUT else e_))
+    free = []
+    for i in insts:
+        iv = busy.get(i["id_instance"], [])
+        if any(s_ <= end and e_ >= start for s_, e_ in iv):
+            continue
+        before = [e_ for s_, e_ in iv if e_ < start]
+        free.append(((start - max(before)).days if before else 10 ** 6, i["id_instance"], i))
+    free.sort(key=lambda x: (x[0], x[1]))
+    return [x[2] for x in free[:qty]]
+
+
+def assign_instances(t, item, who):
+    """Связывает позицию с конкретными экземплярами (ЭкземплярыПозиции.id_instance); недостающие добирает."""
+    if not has_instances(t, item["id_tool"]):
+        return
+    have = [a for a in t.q("SELECT * FROM [ЭкземплярыПозиции] WHERE [id_item] = ?", [item["id_item"]]) if a["status"] in (A_ASSIGNED, A_OUT)]
+    need = int(item["qty"]) - len(have)
+    if need <= 0:
+        return
+    chosen = pick_instances(t, item["id_tool"], as_dt(item["start"]), as_dt(item["end"]), need, exclude_item=item["id_item"])
+    if len(chosen) < need:
+        raise ValueError(f"Не хватает физических экземпляров на эти даты: нужно {need}, свободно {len(chosen)} "
+                         "(часть может быть на проверке, в ремонте или ещё не возвращена).")
+    for inst in chosen:
+        aid = t.insert("ЭкземплярыПозиции", {"id_item": item["id_item"], "id_instance": inst["id_instance"], "Статус": A_ASSIGNED})
+        instance_log(t, inst["id_instance"], "Назначен на заявку", inst["state"], inst["state"], aid, inst["code_inv"], who=who)
+
+
+def swap_assignment(t, a, item, bad_inst, who, reason):
+    """Заменяет экземпляр в назначении другим свободным на те же даты."""
+    repl = pick_instances(t, item["id_tool"], as_dt(item["start"]), as_dt(item["end"]), 1,
+                          exclude_item=item["id_item"], exclude_ids={bad_inst["id_instance"]})
+    if not repl:
+        raise ValueError(f"Экземпляр {bad_inst['code_inv'] or '№' + str(bad_inst['id_instance'])} назначен на заявку №{item['id_rent']} "
+                         f"({fmt_d(item['start'])}–{fmt_d(item['end'])}), заменить его нечем.")
+    t.update("ЭкземплярыПозиции", "id_instance_rent", a["id_instance_rent"], {"id_instance": repl[0]["id_instance"]})
+    instance_log(t, bad_inst["id_instance"], "Назначение снято", bad_inst["state"], bad_inst["state"], a["id_instance_rent"],
+                 bad_inst["code_inv"], comment=reason, who=who)
+    instance_log(t, repl[0]["id_instance"], "Назначен на заявку", STATE_OK, STATE_OK, a["id_instance_rent"], repl[0]["code_inv"],
+                 comment="Замена", who=who)
+
+
+def issue_instances(t, item, who):
+    """Выдача: фиксирует код экземпляра (КодВыдачи) и дату; непригодные экземпляры заменяет."""
+    if not has_instances(t, item["id_tool"]):
+        return
+    assign_instances(t, item, who)
+    out_now = {a["id_instance"] for a in t.q("SELECT * FROM [ЭкземплярыПозиции] WHERE [Статус] = ?", [A_OUT])}
+    for a in [x for x in t.q("SELECT * FROM [ЭкземплярыПозиции] WHERE [id_item] = ?", [item["id_item"]]) if x["status"] == A_ASSIGNED]:
+        inst = t.one("SELECT * FROM [ФизическийЭкземпляр] WHERE [id_instance] = ?", [a["id_instance"]])
+        if inst["state"] != STATE_OK or inst["id_instance"] in out_now:
+            swap_assignment(t, a, item, inst, who, "Экземпляр недоступен к выдаче")
+            a = t.one("SELECT * FROM [ЭкземплярыПозиции] WHERE [id_instance_rent] = ?", [a["id_instance_rent"]])
+            inst = t.one("SELECT * FROM [ФизическийЭкземпляр] WHERE [id_instance] = ?", [a["id_instance"]])
+        t.update("ЭкземплярыПозиции", "id_instance_rent", a["id_instance_rent"],
+                 {"Статус": A_OUT, "КодВыдачи": inst["code_inv"], "ДатаВыдачи": now()})
+        instance_log(t, inst["id_instance"], "Выдан", inst["state"], inst["state"], a["id_instance_rent"], inst["code_inv"], who=who)
+
+
+def release_future_assignments(t, inst, who):
+    """Перед уходом экземпляра с проверки/в ремонт/в списание подбирает замену для будущих назначений."""
+    for a in t.q("SELECT * FROM [ЭкземплярыПозиции] WHERE [id_instance] = ? AND [Статус] = ?", [inst["id_instance"], A_ASSIGNED]):
+        item = t.one("SELECT * FROM [ПозицияБронирования] WHERE [id_item] = ?", [a["id_item"]])
+        if item:
+            swap_assignment(t, a, item, inst, who, "Экземпляр выведен из доступных")
+
+
+def apply_state(t, inst, new, who, comment=None, assign_id=None, grade=None, event=None):
+    old = inst["state"]
+    if old == STATE_OFF:
+        raise ValueError("Списанный экземпляр изменить нельзя.")
+    if new != STATE_OK:
+        release_future_assignments(t, inst, who)
+    code, vals = inst["code_inv"], {"Состояние": new}
+    if new == STATE_OFF:        # код освобождается; прежний сохраняется в журнале, назначениях и примечании
+        add = f"Списан {fmt_d(now())}; прежний инвентарный код {code}." + (f" {comment}" if comment else "")
+        vals.update({"ИнвентарныйКод": None, "Примечание": ((inst["note"] + "\n") if inst["note"] else "") + add})
+    t.update("ФизическийЭкземпляр", "id_instance", inst["id_instance"], vals)
+    names = {STATE_OK: "Принят: доступен", STATE_CHECK: "Отправлен на проверку", STATE_REPAIR: "Отправлен в ремонт", STATE_OFF: "Списан"}
+    instance_log(t, inst["id_instance"], event or names[new], old, new, assign_id, code, grade, comment, who)
+    if new == STATE_OFF:
+        sync_alive_stock(t, inst["id_tool"])
+
+
+def return_instances(t, item, who, form, accept_all):
+    """Возврат: осмотр каждого экземпляра (оценка 0–100, комментарий, решение) или одна кнопка «принять все»."""
+    asg = [a for a in t.q("SELECT * FROM [ЭкземплярыПозиции] WHERE [id_item] = ?", [item["id_item"]]) if a["status"] == A_OUT]
+    plan = []
+    for a in asg:                                  # сначала проверка всех данных, потом запись
+        k = a["id_instance_rent"]
+        if accept_all:
+            plan.append((a, 100, None, STATE_OK))
+            continue
+        try:
+            grade = int(str(form.get(f"grade-{k}", "")).strip())
+        except ValueError:
+            grade = -1
+        decision, comment = form.get(f"state-{k}"), (form.get(f"comment-{k}") or "").strip()[:255] or None
+        if not 0 <= grade <= 100:
+            raise ValueError("Оценка качества — число от 0 до 100.")
+        if decision not in INSTANCE_STATES:
+            raise ValueError("Выберите дальнейшее состояние каждого экземпляра.")
+        if decision in (STATE_REPAIR, STATE_OFF) and not comment:
+            raise ValueError("Для ремонта и списания укажите комментарий.")
+        plan.append((a, grade, comment, decision))
+    for a, grade, comment, decision in plan:
+        k = a["id_instance_rent"]
+        inst = t.one("SELECT * FROM [ФизическийЭкземпляр] WHERE [id_instance] = ?", [a["id_instance"]])
+        t.update("ЭкземплярыПозиции", "id_instance_rent", k, {"Статус": A_BACK, "ДатаВозврата": now(), "ОценкаКачества": grade,
+                                                              "Комментарий": comment, "КтоОсмотрел_id_user": who})
+        apply_state(t, inst, decision, who, comment, k, grade, "Возврат и приёмка")
+
+
+def cancel_assignments(t, item_id, who):
+    for a in t.q("SELECT * FROM [ЭкземплярыПозиции] WHERE [id_item] = ?", [item_id]):
+        if a["status"] == A_ASSIGNED:
+            inst = t.one("SELECT * FROM [ФизическийЭкземпляр] WHERE [id_instance] = ?", [a["id_instance"]])
+            t.update("ЭкземплярыПозиции", "id_instance_rent", a["id_instance_rent"], {"Статус": A_CANCEL})
+            instance_log(t, inst["id_instance"], "Назначение снято", inst["state"], inst["state"], a["id_instance_rent"],
+                         inst["code_inv"], comment="Заявка отменена", who=who)
+
+
+def change_instance_state(admin, iid, new, comment):
+    """Ручная смена состояния: проверка, ремонт, приёмка, списание. Возвращает id модели."""
+    if new not in INSTANCE_STATES:
+        raise ValueError("Выберите состояние.")
+    with ORDER_LOCK, Tx() as t:
+        inst = t.one("SELECT * FROM [ФизическийЭкземпляр] WHERE [id_instance] = ?", [iid])
+        if not inst:
+            raise ValueError("Экземпляр не найден.")
+        if inst["state"] == STATE_OFF:
+            raise ValueError("Списанный экземпляр изменить нельзя.")
+        if any(a["status"] == A_OUT for a in t.q("SELECT [Статус] FROM [ЭкземплярыПозиции] WHERE [id_instance] = ?", [iid])):
+            raise ValueError("Экземпляр сейчас выдан: сначала оформите возврат и приёмку по заявке.")
+        if new == inst["state"]:
+            raise ValueError("Экземпляр уже в этом состоянии.")
+        if new in (STATE_REPAIR, STATE_OFF) and not comment:
+            raise ValueError("Для ремонта и списания укажите комментарий.")
+        code = inst["code_inv"]
+        repaired = inst["state"] == STATE_REPAIR and new == STATE_CHECK      # ремонт завершён, нужна приёмка
+        event = ("Ремонт завершён: ожидает подтверждения приёмки" if repaired else
+                 "Приёмка подтверждена" if inst["state"] == STATE_CHECK and new == STATE_OK else None)
+        apply_state(t, inst, new, admin["id_user"], comment or None, event=event)
+        admin_log(t, admin["id_user"], "Экземпляр: " + new.lower(), None,
+                  f"Модель №{inst['id_tool']}, экземпляр №{iid} ({code}): {inst['state']} → {new}" + (f". {comment}" if comment else ""))
+        notes = []
+        if repaired:                       # уведомление администраторам: инструмент починен, подтвердите приёмку
+            tool = t.one("SELECT * FROM [Инструмент] WHERE [id_tool] = ?", [inst["id_tool"]])
+            for aid in admin_ids(t):
+                notes.append((aid, "Инструмент починен: подтвердите приёмку",
+                              f"«{clean_text(tool['name'])}», экземпляр {code}: ремонт завершён" + (f" ({comment})" if comment else "") +
+                              ". Откройте Админ-панель → Инструменты → Экземпляры и подтвердите приёмку, выбрав состояние «Доступен».",
+                              "Система", None))
+        result = (inst["id_tool"], repaired)
+    notify_all(notes)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Заявка (корзина): позиции с собственным количеством и сроками, хранится в сессии
 # ---------------------------------------------------------------------------
 def cart_lines():
@@ -585,8 +1129,12 @@ def cart_lines():
             continue
         days = rent_days(s, e)
         out.append({"k": l["k"], "tool": tool, "qty": l["q"], "start": s, "end": e, "days": days,
-                    "rent": tool["price"] * l["q"] * days, "deposit": tool["deposit"] * l["q"]})
+                    "price_k": kop(tool["price"]), "deposit_k": kop(tool["deposit"])})
     return out
+
+
+def calc_input(lines):
+    return [{"price_k": l["price_k"], "deposit_k": l["deposit_k"], "qty": l["qty"], "days": l["days"]} for l in lines]
 
 
 def validate_period(start, end):
@@ -600,7 +1148,21 @@ def validate_period(start, end):
         raise ValueError(f"Максимальный срок аренды — {MAX_RENT_DAYS} дней.")
 
 
+def prospective_items(tool_id, qty, start, end):
+    """Содержимое корзины после добавления позиции (одинаковые даты объединяются) и индекс новой позиции."""
+    cart = session.get("cart", [])
+    s, e = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+    items = [{"tool_id": l["t"], "qty": l["q"], "start": parse_date(l["s"]), "end": parse_date(l["e"])} for l in cart]
+    same = next((i for i, l in enumerate(cart) if l["t"] == tool_id and l["s"] == s and l["e"] == e), None)
+    if same is not None:
+        items[same]["qty"] = min(items[same]["qty"] + qty, 9999)
+        return items, same
+    items.append({"tool_id": tool_id, "qty": qty, "start": start, "end": end})
+    return items, len(items) - 1
+
+
 def cart_add_line(tool_id, qty, start, end):
+    """Добавляет позицию в корзину после проверки дат и свободного количества (с учётом уже выбранных позиций)."""
     validate_period(start, end)
     if not 1 <= qty <= 9999:
         raise ValueError("Количество должно быть от 1 до 9999.")
@@ -608,28 +1170,27 @@ def cart_add_line(tool_id, qty, start, end):
     if not tool:
         raise ValueError("Инструмент не найден или снят с аренды.")
     cart = session.get("cart", [])
-    s, e = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
-    for l in cart:
-        if l["t"] == tool_id and l["s"] == s and l["e"] == e:
-            l["q"] = min(l["q"] + qty, 9999)
-            break
+    items, idx = prospective_items(tool_id, qty, start, end)
+    if idx == len(cart) and len(cart) >= MAX_CART_LINES:
+        raise ValueError(f"В заявке не может быть больше {MAX_CART_LINES} позиций.")
+    av = lines_availability(items)[idx]
+    if not av["ok"]:
+        raise ValueError(f"Нельзя добавить «{tool['name']}»: {av['message']}")
+    if idx < len(cart):
+        cart[idx]["q"] = items[idx]["qty"]
     else:
-        if len(cart) >= MAX_CART_LINES:
-            raise ValueError(f"В заявке не может быть больше {MAX_CART_LINES} позиций.")
-        cart.append({"k": secrets.token_hex(4), "t": tool_id, "q": qty, "s": s, "e": e})
+        cart.append({"k": secrets.token_hex(4), "t": tool_id, "q": qty, "s": start.strftime("%Y-%m-%d"), "e": end.strftime("%Y-%m-%d")})
     session["cart"] = cart
 
 
 # ---------------------------------------------------------------------------
 # Купоны, баллы, оценочная выгода
 # ---------------------------------------------------------------------------
-def coupon_discount(c, subtotal):
-    v = D(subtotal) * D(c["amount"]) / 100 if c["disc_type"] == "Процент" else D(c["amount"])
-    return money(min(v, D(subtotal)))
 
 
-def usable_coupons(t, uid, subtotal=None):
-    """Купоны пользователя с пометкой, можно ли применить их сейчас."""
+
+def usable_coupons(t, uid, auto_rent_k=None):
+    """Купоны пользователя: можно ли применить сейчас, и параметры для расчёта (spec)."""
     out = []
     for uc in t.q("SELECT * FROM [КупонПользователя] WHERE [id_user] = ? AND [Использован] = ?", [uid, False]):
         c = t.one("SELECT * FROM [Купон] WHERE [id_coupon] = ?", [uc["id_coupon"]])
@@ -647,10 +1208,10 @@ def usable_coupons(t, uid, subtotal=None):
         elif c["limit"] and t.one("SELECT COUNT(*) AS n FROM [ИспользованиеКупона] WHERE [id_coupon] = ?",
                                   [c["id_coupon"]])["n"] >= c["limit"]:
             why = "лимит использований исчерпан"
-        elif subtotal is not None and D(subtotal) < D(c["min_sum"]):
-            why = f"минимальная сумма заказа {rub(c['min_sum'])}"
-        out.append({"uc": uc["id_user_coupon"], "coupon": c, "end": end, "ok": not why, "why": why,
-                    "discount": coupon_discount(c, subtotal) if subtotal is not None and not why else None})
+        elif auto_rent_k is not None and auto_rent_k < kop(c["min_sum"]):
+            why = f"минимальная сумма аренды {rub(c['min_sum'])}"
+        out.append({"uc": uc["id_user_coupon"], "coupon": c, "end": end, "ok": not why, "why": why, "spec": coupon_spec(c),
+                    "kind": coupon_kind(c)})
     return out
 
 
@@ -688,71 +1249,76 @@ def derive_status(statuses):
     return O_WORK
 
 
-def create_order(user, lines, uc_id, points, delivery):
+def create_order(user, lines, uc_id, points, delivery, logistics=None):
+    """Создаёт заявку. Цены, доступность, скидки и итоги заново считаются здесь из данных Access;
+    суммы из браузера не принимаются."""
     if not lines:
         raise ValueError("Заявка пуста.")
     if delivery not in ("Самовывоз", "Доставка"):
         raise ValueError("Выберите способ получения.")
     notes = []
-    with Tx() as t:
-        taken = []        # позиции этой же заявки, уже занявшие инструмент
-        for l in lines:
-            tool = t.one("SELECT * FROM [Инструмент] WHERE [id_tool] = ? AND [Активен] = ?", [l["tool"]["id"], True])
-            if not tool:
-                raise ValueError(f"«{l['tool']['name']}» больше недоступен для аренды.")
-            validate_period(l["start"], l["end"])
-            free = tool_free(t, tool["id_tool"], tool["stock"], l["start"], l["end"])
-            free -= sum(q_ for (tid, s, e, q_) in taken if tid == tool["id_tool"] and s <= l["end"] and e >= l["start"])
-            if l["qty"] > free:
-                raise ValueError(f"«{l['tool']['name']}»: на {fmt_d(l['start'])}–{fmt_d(l['end'])} "
-                                 f"свободно только {max(free, 0)} шт.")
-            taken.append((tool["id_tool"], l["start"], l["end"], l["qty"]))
-        subtotal = sum((l["rent"] for l in lines), Decimal(0))
-        deposit = sum((l["deposit"] for l in lines), Decimal(0))
-        disc_c, coupon = Decimal(0), None
-        if uc_id:
-            cand = [c for c in usable_coupons(t, user["id_user"], subtotal) if c["uc"] == uc_id]
-            if not cand or not cand[0]["ok"]:
-                raise ValueError("Выбранный купон нельзя применить: " + (cand[0]["why"] if cand else "он не найден") + ".")
-            coupon = cand[0]
-            disc_c = coupon["discount"]
-        pts_used, disc_p = 0, Decimal(0)
-        if points and POINT_RATE:
-            disc_p = min(D(points) * POINT_RATE, subtotal - disc_c)
-            pts_used = int((disc_p / POINT_RATE).to_integral_value(ROUND_DOWN))
-            disc_p = money(D(pts_used) * POINT_RATE)
-        discount = money(disc_c + disc_p)
-        rid = t.insert("Бронирование", {
-            "id_user": user["id_user"], "ДатаСоздания": now(), "Статус": O_NEW,
-            "СуммаДоСкидки": money(subtotal), "СуммаСкидки": discount, "СуммаАренды": money(subtotal - discount),
-            "СуммаЗалога": money(deposit), "СпособДоставки": delivery})
-        for l in lines:
-            item = t.insert("ПозицияБронирования", {
-                "id_rent": rid, "id_tool": l["tool"]["id"], "Количество": l["qty"], "ЦенаНаМоментБрони": l["tool"]["price"],
-                "ДатаНачала": l["start"], "ДатаОкончания": l["end"], "Статус": P_NEW})
-            t.insert("ИсторияСтатусовПозиций", {"id_item": item, "СтарыйСтатус": "—", "НовыйСтатус": P_NEW,
-                                               "КтоИзменил_id_user": user["id_user"], "Когда": now(),
-                                               "Комментарий": "Позиция создана"})
-        t.insert("ИсторияСтатусов", {"id_rent": rid, "СтарыйСтатус": "—", "НовыйСтатус": O_NEW,
-                                     "КтоИзменил_id_user": user["id_user"], "Когда": now(),
-                                     "Комментарий": "Заявка создана пользователем"})
-        if coupon:
-            t.x("UPDATE [КупонПользователя] SET [Использован] = ? WHERE [id_user_coupon] = ?", [True, uc_id])
-            t.insert("ИспользованиеКупона", {"id_coupon": coupon["coupon"]["id_coupon"], "id_user": user["id_user"],
-                                             "id_rent": rid, "РазмерСкидки": disc_c, "ДатаИспользования": now()})
-        if pts_used:
-            if t.x("UPDATE [Пользователь] SET [Баллы] = [Баллы] - ? WHERE [id_user] = ? AND [Баллы] >= ?",
-                   [pts_used, user["id_user"], pts_used]) != 1:
-                raise ValueError("Недостаточно баллов.")
-            t.insert("ОперацииБаллов", {"id_user": user["id_user"], "id_rent": rid, "Количество": -pts_used,
-                                        "ТипОперации": "Списание", "Дата": now(),
-                                        "Комментарий": f"Оплата части заявки №{rid} баллами"})
-        notes.append((user["id_user"], f"Заявка №{rid} отправлена",
-                      f"Мы получили вашу заявку №{rid} ({len(lines)} поз.). Администратор рассмотрит её, "
-                      f"статус можно смотреть в личном кабинете.", "Заявка", rid))
-        for aid in admin_ids(t):
-            notes.append((aid, f"Новая заявка №{rid}", f"Пользователь {user['login']} отправил заявку №{rid}.",
-                          "Заявка", rid, False))
+    with ORDER_LOCK:                       # две одновременные заявки на один инструмент не пройдут мимо проверки остатка
+        with Tx() as t:
+            rows = _tool_rows({l["tool"]["id"] for l in lines}, t)
+            items = []
+            for l in lines:
+                r = rows.get(l["tool"]["id"])
+                if not r or not r["active"]:
+                    raise ValueError(f"«{l['tool']['name']}» больше недоступен для аренды.")
+                validate_period(l["start"], l["end"])
+                items.append({"tool_id": r["id_tool"], "qty": l["qty"], "start": l["start"], "end": l["end"]})
+            for l, a in zip(lines, lines_availability(items, t, rows)):
+                if not a["ok"]:
+                    raise ValueError(f"«{l['tool']['name']}», {fmt_d(l['start'])}–{fmt_d(l['end'])}: {a['message']}")
+            cl = [{"price_k": kop(rows[l["tool"]["id"]]["price"]), "deposit_k": kop(rows[l["tool"]["id"]]["deposit"]),
+                   "qty": l["qty"], "days": rent_days(l["start"], l["end"])} for l in lines]
+            spec = cand = None
+            if uc_id:
+                cand = next((c for c in usable_coupons(t, user["id_user"], calc_quote(cl)["auto_rent"]) if c["uc"] == uc_id), None)
+                if not cand or not cand["ok"]:
+                    raise ValueError("Выбранный купон нельзя применить: " + (cand["why"] if cand else "он не найден") + ".")
+                spec = cand["spec"]
+            balance = t.one("SELECT [Баллы] FROM [Пользователь] WHERE [id_user] = ?", [user["id_user"]])["points"]
+            qt = calc_quote(cl, spec, points, int(balance or 0))
+            rid = t.insert("Бронирование", {
+               "id_user": user["id_user"], "ДатаСоздания": now(), "Статус": O_NEW,
+                "СуммаДоСкидки": from_k(qt["base"]), "СуммаСкидки": from_k(qt["base"] - qt["rent"]),
+                "СуммаАренды": from_k(qt["rent"]), "СуммаЗалога": from_k(qt["deposit"]), "СпособДоставки": delivery})
+            for l, ln in zip(lines, qt["lines"]):
+                item = t.insert("ПозицияБронирования", {
+                    "id_rent": rid, "id_tool": l["tool"]["id"], "Количество": l["qty"],
+                    "ЦенаНаМоментБрони": money(rows[l["tool"]["id"]]["price"]), "ДатаНачала": l["start"],
+                    "ДатаОкончания": l["end"], "Статус": P_NEW})
+                t.insert("ИсторияСтатусовПозиций", {"id_item": item, "СтарыйСтатус": "—", "НовыйСтатус": P_NEW,
+                                                   "КтоИзменил_id_user": user["id_user"], "Когда": now(),
+                                                   "Комментарий": "Позиция создана"})
+            t.insert("ИсторияСтатусов", {"id_rent": rid, "СтарыйСтатус": "—", "НовыйСтатус": O_NEW,
+                                         "КтоИзменил_id_user": user["id_user"], "Когда": now(),
+                                         "Комментарий": "Заявка создана пользователем" + (f" · {BIZ_MARK} {fmt_pct(qt['corp_bp'])}" if qt["corp_bp"] else "")})
+            if cand and qt["coupon_ok"]:
+                if t.x("UPDATE [КупонПользователя] SET [Использован] = ? WHERE [id_user_coupon] = ? AND [Использован] = ?",
+                       [True, uc_id, False]) != 1:
+                    raise ValueError("Этот купон уже использован.")
+                t.insert("ИспользованиеКупона", {"id_coupon": cand["coupon"]["id_coupon"], "id_user": user["id_user"],
+                                                 "id_rent": rid, "РазмерСкидки": from_k(qt["coupon"]),
+                                                 "ДатаИспользования": now()})
+            if qt["points"]:
+                if t.x("UPDATE [Пользователь] SET [Баллы] = [Баллы] - ? WHERE [id_user] = ? AND [Баллы] >= ?",
+                       [qt["points"], user["id_user"], qt["points"]]) != 1:
+                    raise ValueError("Недостаточно баллов.")
+                t.insert("ОперацииБаллов", {"id_user": user["id_user"], "id_rent": rid, "Количество": -qt["points"],
+                                            "ТипОперации": "Списание", "Дата": now(),
+                                            "Комментарий": f"Оплата части заявки №{rid} баллами"})
+            notes.append((user["id_user"], f"Заявка №{rid} отправлена",
+                          f"Мы получили вашу заявку №{rid} ({len(lines)} поз.). Администратор рассмотрит её, "
+                          f"статус можно смотреть в личном кабинете.", "Заявка", rid))
+            for aid in admin_ids(t):
+                notes.append((aid, f"Новая заявка №{rid}", f"Пользователь {user['login']} отправил заявку №{rid}.",
+                              "Заявка", rid, False))
+    try:
+        save_order_meta(rid, logistics)
+    except OSError as e:
+        print("[ToolRent] Не удалось записать order_meta.json:", e)
     notify_all(notes)
     return rid
 
@@ -763,28 +1329,26 @@ def refresh_order(t, rid, who, comment=""):
     order = t.one("SELECT * FROM [Бронирование] WHERE [id_rent] = ?", [rid])
     pos = t.q("SELECT * FROM [ПозицияБронирования] WHERE [id_rent] = ?", [rid])
     live = [p for p in pos if p["status"] not in DEAD]
-    sub = sum((D(p["price_at"]) * p["qty"] * rent_days(p["start"], p["end"]) for p in live), Decimal(0))
-    dep = Decimal(0)
-    for p in live:
-        tool = t.one("SELECT * FROM [Инструмент] WHERE [id_tool] = ?", [p["id_tool"]])
-        dep += D(tool["deposit"]) * p["qty"] if tool else 0
+    tools = _tool_rows({p["id_tool"] for p in live}, t)
+    cl = [{"price_k": kop(p["price_at"]), "deposit_k": kop(tools[p["id_tool"]]["deposit"]) if p["id_tool"] in tools else 0,
+           "qty": p["qty"], "days": rent_days(p["start"], p["end"])} for p in live]
     new = derive_status([p["status"] for p in pos])
-    disc_c = disc_p = Decimal(0)
     usage = t.one("SELECT * FROM [ИспользованиеКупона] WHERE [id_rent] = ?", [rid])
+    spec = None
     if live and usage:
         c = t.one("SELECT * FROM [Купон] WHERE [id_coupon] = ?", [usage["id_coupon"]])
         if c:
-            disc_c = coupon_discount(c, sub)
-            if D(usage["amount"]) != disc_c:
-                t.update("ИспользованиеКупона", "id_usage", usage["id_usage"], {"РазмерСкидки": disc_c})
-    if live and POINT_RATE:
-        spent = -sum(int(o["delta"]) for o in t.q(
-            "SELECT [Количество] AS delta FROM [ОперацииБаллов] WHERE [id_rent] = ? AND [ТипОперации] = ?",
-            [rid, "Списание"]))
-        disc_p = min(D(spent) * POINT_RATE, sub - disc_c)
-    discount = money(min(disc_c + disc_p, sub))
-    t.update("Бронирование", "id_rent", rid, {"СуммаДоСкидки": money(sub), "СуммаСкидки": discount,
-                                              "СуммаАренды": money(sub - discount), "СуммаЗалога": money(dep),
+            spec = coupon_spec(c)
+            spec["min_k"] = 0                      # условия купона проверялись при оформлении
+    spent = -sum(int(o["delta"]) for o in t.q(
+        "SELECT [Количество] AS delta FROM [ОперацииБаллов] WHERE [id_rent] = ? AND [ТипОперации] = ?", [rid, "Списание"]))
+    had_corp = any(BIZ_MARK in (h["comment"] or "") for h in t.q("SELECT * FROM [ИсторияСтатусов] WHERE [id_rent] = ?", [rid]))
+    qt = calc_quote(cl, spec, spent if live else 0, None, enforce_max=False,
+                    corp_bp=_bp(CORPORATE_DISCOUNT_PERCENT) if had_corp else 0)
+    if usage and spec and D(usage["amount"]) != from_k(qt["coupon"]):
+        t.update("ИспользованиеКупона", "id_usage", usage["id_usage"], {"РазмерСкидки": from_k(qt["coupon"])})
+    t.update("Бронирование", "id_rent", rid, {"СуммаДоСкидки": from_k(qt["base"]), "СуммаСкидки": from_k(qt["base"] - qt["rent"]),
+                                              "СуммаАренды": from_k(qt["rent"]), "СуммаЗалога": from_k(qt["deposit"]),
                                               "Статус": new})
     old = order["status"]
     if new != old:
@@ -840,17 +1404,20 @@ def accrue_points(t, order):
 
 
 ITEM_ACTIONS = {"approve": (P_NEW, P_OK, "одобрена"), "reject": (P_NEW, P_NO, "отклонена"),
-                "issue": (P_OK, P_OUT, "выдана"), "return": (P_OUT, P_BACK, "возвращена")}
+                "issue": (P_OK, P_OUT, "выдана"), "return": (P_OUT, P_BACK, "возвращена")}   # «принять все» — вариант return
 
 
-def admin_item_action(admin, item_id, action, reason=""):
+def admin_item_action(admin, item_id, action, reason="", form=None):
+    accept_all = action == "return_all"        # одна кнопка: все экземпляры позиции прошли проверку
+    if accept_all:
+        action = "return"
     if action not in ITEM_ACTIONS:
         raise ValueError("Неизвестное действие.")
     need, new, word = ITEM_ACTIONS[action]
     if action == "reject" and not reason.strip():
         raise ValueError("При отказе нужно указать причину.")
     notes = []
-    with Tx() as t:
+    with ORDER_LOCK, Tx() as t:
         it = t.one("SELECT * FROM [ПозицияБронирования] WHERE [id_item] = ?", [item_id])
         if not it:
             raise ValueError("Позиция не найдена.")
@@ -858,8 +1425,15 @@ def admin_item_action(admin, item_id, action, reason=""):
             raise ValueError(f"Действие невозможно: позиция сейчас «{it['status']}».")
         order = t.one("SELECT * FROM [Бронирование] WHERE [id_rent] = ?", [it["id_rent"]])
         tool = t.one("SELECT * FROM [Инструмент] WHERE [id_tool] = ?", [it["id_tool"]])
-        if action == "approve" and tool_free(t, it["id_tool"], tool["stock"], as_dt(it["start"]), as_dt(it["end"])) < it["qty"]:
+        if action == "approve" and tool_free(t, it["id_tool"], tool_capacity(t, tool), as_dt(it["start"]), as_dt(it["end"]),
+                                                exclude_item=item_id) < it["qty"]:
             raise ValueError("Недостаточно свободного инструмента на эти даты.")
+        if action == "approve":
+            assign_instances(t, it, admin["id_user"])
+        elif action == "issue":
+            issue_instances(t, it, admin["id_user"])
+        elif action == "return":
+            return_instances(t, it, admin["id_user"], form or {}, accept_all)
         t.update("ПозицияБронирования", "id_item", item_id, {"Статус": new})
         t.insert("ИсторияСтатусовПозиций", {"id_item": item_id, "СтарыйСтатус": it["status"], "НовыйСтатус": new,
                                            "КтоИзменил_id_user": admin["id_user"], "Когда": now(),
@@ -891,6 +1465,8 @@ def user_cancel_order(user, rid):
             raise ValueError("Заявку с выданным оборудованием отменить нельзя: обратитесь к администратору.")
         for p in pos:
             if p["status"] in (P_NEW, P_OK):
+                if p["status"] == P_OK:
+                    cancel_assignments(t, p["id_item"], user["id_user"])
                 t.update("ПозицияБронирования", "id_item", p["id_item"], {"Статус": P_CANCEL})
                 t.insert("ИсторияСтатусовПозиций", {"id_item": p["id_item"], "СтарыйСтатус": p["status"],
                                                    "НовыйСтатус": P_CANCEL, "КтоИзменил_id_user": user["id_user"],
@@ -977,7 +1553,7 @@ def activity_data(uid):
                 ev.append((as_dt(h["at"]), k, f"Заявка №{owner[h['id_item']]}: позиция №{h['id_item']} — {ACT_KINDS[k].lower()}"))
     for part in _chunks(rids):
         for h in q(f"SELECT * FROM [ИсторияСтатусов] WHERE [id_rent] IN ({', '.join(['?'] * len(part))})", part):
-            if h["new_status"] == O_DONE:
+            if h["new_status"] == O_DONE and not (h["comment"] or "").startswith(PAID_MARK):
                 ev.append((as_dt(h["at"]), "completed", f"Заявка №{h['id_rent']} завершена"))
     ev = [e for e in ev if e[0]]
     ev.sort(key=lambda e: e[0], reverse=True)
@@ -1012,7 +1588,8 @@ def before():
     if request.endpoint in (None, "css", "img"):
         return
     if request.method == "POST":
-        if not hmac.compare_digest(request.form.get("csrf", ""), session.get("_csrf", "")):
+        sent, expected = request.form.get("csrf") or request.headers.get("X-CSRF-Token", ""), session.get("_csrf", "")
+        if not sent or not expected or not hmac.compare_digest(sent, expected):     # пустой токен не принимается
             abort(400)
     uid = session.get("uid")
     if uid:
@@ -1025,19 +1602,33 @@ def before():
                 flash("Аккаунт заблокирован" + (f": {u['block_reason']}" if u["block_reason"] else "") + ".")
 
 
+def rules_info():
+    return dict(qty_units=QUANTITY_DISCOUNT_MIN_UNITS, qty_percent=fmt_pct(_bp(QUANTITY_DISCOUNT_PERCENT)),
+                has_tiers=bool(DURATION_TIERS), tiers=[(d, fmt_pct(_bp(p))) for d, p in sorted(DURATION_TIERS)],
+                points_percent=int(POINTS_PERCENT), points_max=fmt_pct(_bp(POINTS_MAX_PERCENT)))
+
+
+def asset_version():
+    """Метка версии style.css и script.js, чтобы браузер не держал старые файлы."""
+    times = [os.path.getmtime(os.path.join(BASE_DIR, f)) for f in ("style.css", "script.js") if os.path.exists(os.path.join(BASE_DIR, f))]
+    return int(max(times)) if times else 0
+
+
 @app.context_processor
 def inject_globals():
     ctx = dict(
         me=g.user, is_admin=bool(g.user and g.user["role"] == ROLE_ADMIN),
-        is_b2b=bool(g.user and g.user["role"] == ROLE_B2B), unread=0, mode=session.get("mode", "b2c"),
-        categories=[], cart_lines=[], cart_count=0, cart_rent=Decimal(0), cart_deposit=Decimal(0),
-        current=request.full_path.rstrip("?"), point_rate=POINT_RATE, points_percent=int(POINTS_PERCENT),
+        is_b2b=bool(g.user and g.user["role"] == ROLE_B2B), unread=0, mode=current_mode(), b2b_pending=False,
+        biz_view=current_mode() == "b2b", biz_real=is_biz_real(), biz_pct=fmt_pct(_bp(CORPORATE_DISCOUNT_PERCENT)),
+        categories=[], cart_lines=[], cart_count=0,
+        current=request.full_path.rstrip("?"), points_percent=int(POINTS_PERCENT), rent_cfg=json.dumps(rent_config(preview=request.endpoint == "tool" and current_mode() == "b2b")), rules=rules_info(),
+        asset_v=asset_version(),
         mail_enabled=bool(_env("TOOLRENT_SMTP_HOST")), today_iso=date.today().isoformat())
     try:      # страницы ошибок должны открываться, даже если база недоступна
         lines = cart_lines()
-        ctx.update(categories=get_categories(), cart_lines=lines, cart_count=len(lines),
-                   cart_rent=sum((l["rent"] for l in lines), Decimal(0)),
-                   cart_deposit=sum((l["deposit"] for l in lines), Decimal(0)))
+        ctx.update(categories=get_categories(), cart_lines=lines, cart_count=len(lines))
+        if g.user and g.user["role"] == ROLE_USER:
+            ctx["b2b_pending"] = bool(q1("SELECT [id_b2b] FROM [B2B_Реквизиты] WHERE [id_user] = ?", [g.user["id_user"]]))
         if g.user:
             ctx["unread"] = q1("SELECT COUNT(*) AS n FROM [Уведомления] WHERE [id_user] = ? AND [Прочитано] = ?",
                                [g.user["id_user"], False])["n"]
@@ -1109,9 +1700,48 @@ def css():
     return send_from_directory(BASE_DIR, "style.css", mimetype="text/css")
 
 
+@app.route("/script.js")
+def js():
+    return send_from_directory(BASE_DIR, "script.js", mimetype="application/javascript")
+
+
 @app.route("/img/<path:name>")
 def img(name):
     return send_from_directory(IMG_DIR, name)
+
+DOCS_DIR = os.path.join(BASE_DIR, "docs_files")
+CLIENT_DOCS_DIR = os.path.join(BASE_DIR, "client_b2b_docs")
+CLIENT_DOCS_PATH = os.path.join(BASE_DIR, "client_b2b_docs.json")
+DOC_KINDS = {"card": "Карточка организации", "poa": "Доверенность на получение оборудования"}
+
+
+def user_b2b_docs(uid):
+    return json_load(CLIENT_DOCS_PATH, {}).get(str(uid)) or {}
+
+
+def b2b_docs_approved(uid):
+    """Оба документа загружены и имеют статус 'approved' (Подтверждён)."""
+    d = user_b2b_docs(uid)
+    return (d.get("card") or {}).get("status") == "approved" and (d.get("poa") or {}).get("status") == "approved"
+
+
+@app.route("/docs/<path:name>")
+def download_template_doc(name):
+    return send_from_directory(DOCS_DIR, name, as_attachment=True)
+
+
+@app.route("/b2b-doc/<int:uid>/<kind>")
+@login_required
+def download_client_doc(uid, kind):
+    if kind not in DOC_KINDS:
+        abort(404)
+    if g.user["id_user"] != uid and g.user["role"] != ROLE_ADMIN:
+        abort(403)
+    info = user_b2b_docs(uid).get(kind)
+    if not info:
+        abort(404)
+    return send_from_directory(CLIENT_DOCS_DIR, info["file"], as_attachment=True,
+                               download_name=info.get("orig") or info["file"])
 
 
 def catalog_stats():
@@ -1147,13 +1777,20 @@ def tool(tool_id):
     if not t:
         abort(404)
     similar = [x for x in list_tools(cat=t["cat"]) if x["id"] != t["id"]][:3]
-    return render_template("tool.html", t=t, durations=DURATIONS, category=get_category(t["cat"]), similar=similar)
+    cart_units = sum(l["q"] for l in session.get("cart", []))
+    return render_template("tool.html", t=t, durations=DURATIONS, category=get_category(t["cat"]), similar=similar,
+                           cart_units=cart_units)
 
 
 @app.route("/mode/<m>")
 def set_mode(m):
     if m in ("b2c", "b2b"):
         session["mode"] = m
+        if g.user and g.user["role"] == ROLE_B2B and m == "b2c":
+            flash(f"Режим для частных лиц: скидка для бизнеса ({fmt_pct(_bp(CORPORATE_DISCOUNT_PERCENT))}) не применяется. "
+                  "Вернитесь в режим «Бизнесу», чтобы её получить.")
+        elif m == "b2b" and not (g.user and g.user["role"] in (ROLE_B2B, ROLE_ADMIN)):
+            flash("Режим просмотра для бизнеса. Скидка начнёт действовать после подтверждения бизнес-статуса администратором.")
     return redirect(safe_next())
 
 
@@ -1167,104 +1804,291 @@ def b2b():
 # ---------------------------------------------------------------------------
 @app.route("/cart/add", methods=["POST"])
 def cart_add():
+    nxt = safe_next("catalog")
     try:
         start = parse_date(request.form.get("start")) or today()
         days = to_int(request.form.get("days"), 1, 1, MAX_RENT_DAYS)
         end = parse_date(request.form.get("end")) or start + timedelta(days=days - 1)
         cart_add_line(to_int(request.form.get("tool_id")), to_int(request.form.get("qty"), 1, 1, 9999), start, end)
-        return redirect(safe_next() + "#cart")
+        flash("Добавлено в корзину.")
+        return redirect(url_for("cart") if request.form.get("go") == "cart" else nxt)
     except ValueError as e:
         flash(str(e))
-        return redirect(safe_next())
+        return redirect(nxt)
 
 
 @app.route("/cart/remove/<k>", methods=["POST"])
 def cart_remove(k):
     session["cart"] = [l for l in session.get("cart", []) if l["k"] != k]
-    return redirect(safe_next("booking") + ("#cart" if request.values.get("next", "") != "/booking" else ""))
+    return redirect(url_for("cart"))
 
 
 @app.route("/cart/clear", methods=["POST"])
 def cart_clear():
     session["cart"] = []
-    return redirect(safe_next() + ("#cart" if request.values.get("next", "") != "/booking" else ""))
+    session.pop("cart_opts", None)
+    return redirect(url_for("cart"))
 
 
-def apply_line_edits():
-    """Сохраняет изменения количества и дат из формы оформления."""
-    cart, errors = session.get("cart", []), []
-    for l in cart:
-        k = l["k"]
-        if f"qty-{k}" not in request.form:
+DELIVERY = ("Самовывоз", "Доставка")
+
+
+def cart_opts():
+    o = session.get("cart_opts") or {}
+    return {"coupon": to_int(o.get("coupon")), "points": to_int(o.get("points")),
+            "delivery": o.get("delivery") if o.get("delivery") in DELIVERY else "Самовывоз"}
+
+
+def save_cart_opts(coupon=None, points=None, delivery=None):
+    o = cart_opts()
+    if coupon is not None:
+        o["coupon"] = to_int(coupon)
+    if points is not None:
+        o["points"] = to_int(points)
+    if delivery in DELIVERY:
+        o["delivery"] = delivery
+    session["cart_opts"] = o
+
+
+def cart_save_lines(raw):
+    """Сохраняет изменения количества и дат позиций корзины. Инструмент позиции менять нельзя; возвращает {ключ: ошибка}."""
+    cart, errors = session.get("cart", []), {}
+    by_k = {l["k"]: l for l in cart}
+    for r in raw:
+        l = by_k.get(r.get("k"))
+        if not l:
             continue
-        qty = to_int(request.form.get(f"qty-{k}"), l["q"], 1, 9999)
-        s, e = parse_date(request.form.get(f"start-{k}")), parse_date(request.form.get(f"end-{k}"))
         try:
-            validate_period(s, e)
-            l["q"], l["s"], l["e"] = qty, s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d")
+            qty = to_int(r.get("qty"), 0, 0, 9999)
+            if not 1 <= qty <= 9999:
+                raise ValueError("Количество должно быть от 1 до 9999.")
+            start, end = parse_date(r.get("start")), parse_date(r.get("end"))
+            validate_period(start, end)
+            l["q"], l["s"], l["e"] = qty, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
         except ValueError as ex:
-            errors.append(str(ex))
+            errors[l["k"]] = str(ex)
     session["cart"] = cart
     return errors
 
 
-def booking_view(selected_uc=0, points=0, delivery="Самовывоз"):
+def cart_context():
+    """Всё, что нужно корзине и оформлению: позиции, доступность, купоны, итоги (считает Flask)."""
+    opts = cart_opts()
     lines = cart_lines()
-    subtotal = sum((l["rent"] for l in lines), Decimal(0))
-    deposit = sum((l["deposit"] for l in lines), Decimal(0))
-    coupons, disc_c, disc_p = [], Decimal(0), Decimal(0)
-    # свободное количество с учётом других позиций этой же заявки
-    taken = []
-    with Tx() as t:
-        for l in lines:
-            free = tool_free(t, l["tool"]["id"], l["tool"]["stock"], l["start"], l["end"])
-            free -= sum(q_ for (tid, s, e, q_) in taken if tid == l["tool"]["id"] and s <= l["end"] and e >= l["start"])
-            l["free"] = max(free, 0)
-            taken.append((l["tool"]["id"], l["start"], l["end"], l["qty"]))
-        if g.user:
-            coupons = usable_coupons(t, g.user["id_user"], subtotal)
-    chosen = next((c for c in coupons if c["uc"] == selected_uc and c["ok"]), None)
-    if chosen:
-        disc_c = chosen["discount"]
-    if points and POINT_RATE and g.user:
-        points = min(points, g.user["points"])
-        disc_p = money(min(D(points) * POINT_RATE, subtotal - disc_c))
-        points = int((disc_p / POINT_RATE).to_integral_value(ROUND_DOWN))
+    for l, a in zip(lines, lines_availability([{"tool_id": l["tool"]["id"], "qty": l["qty"], "start": l["start"], "end": l["end"]}
+                                               for l in lines])):
+        l["avail"] = a
+    ci = calc_input(lines)
+    coupons, balance = [], 0
+    if g.user:
+        balance = int(g.user["points"] or 0)
+        with Tx() as t:
+            coupons = usable_coupons(t, g.user["id_user"], calc_quote(ci)["auto_rent"])
+    chosen = next((c for c in coupons if c["uc"] == opts["coupon"] and c["ok"]), None)
+    quote = calc_quote(ci, chosen["spec"] if chosen else None, opts["points"], balance)
+    for l, ql in zip(lines, quote["lines"]):
+        l["q"] = ql
+    return dict(lines=lines, quote=quote, coupons=coupons, uc=chosen["uc"] if chosen else 0, balance=balance,
+                points=quote["points"], delivery=opts["delivery"], has_problem=any(not l["avail"]["ok"] for l in lines))
+
+
+def form_lines():
+    out = []
+    for l in session.get("cart", []):
+        k = l["k"]
+        if f"qty-{k}" not in request.form:
+            continue
+        start = parse_date(request.form.get(f"start-{k}"))
+        end = parse_date(request.form.get(f"end-{k}")) or (
+            start + timedelta(days=to_int(request.form.get(f"days-{k}"), 1, 1, MAX_RENT_DAYS) - 1) if start else None)
+        out.append({"k": k, "qty": request.form.get(f"qty-{k}"), "start": request.form.get(f"start-{k}"),
+                    "end": end.strftime("%Y-%m-%d") if end else ""})
+    return out
+
+
+@app.route("/cart", methods=["GET", "POST"])
+def cart():
+    if request.method == "POST":
+        errors = cart_save_lines(form_lines())
+        save_cart_opts(request.form.get("coupon", 0), request.form.get("points", 0), request.form.get("delivery"))
+        for msg in errors.values():
+            flash(msg)
+        if request.form.get("action") == "checkout" and not errors:
+            ctx = cart_context()
+            if not ctx["lines"]:
+                flash("Корзина пуста.")
+            elif ctx["has_problem"]:
+                flash("Проверьте доступность: для некоторых позиций выбрано больше, чем свободно на эти даты.")
+            elif not g.user:
+                flash("Чтобы оформить заявку, войдите в аккаунт или зарегистрируйтесь. Корзина сохранена.")
+                return redirect(url_for("login", next=url_for("booking")))
+            else:
+                return redirect(url_for("booking"))
+        return redirect(url_for("cart"))
+    return render_template("cart.html", **cart_context())
+
+
+@app.route("/api/cart/quote", methods=["POST"])
+def api_cart_quote():
+    """Живой пересчёт корзины: браузер присылает только количество, даты, купон и баллы; цены берутся из Access."""
+    d = request.get_json(silent=True) or {}
+    errors = cart_save_lines(d.get("lines") or [])
+    save_cart_opts(d.get("coupon"), d.get("points"))
+    ctx = cart_context()
+    q_ = ctx["quote"]
+    return jsonify(
+        lines=[{"k": l["k"], "ok": l["avail"]["ok"], "free": l["avail"]["free"], "message": l["avail"]["message"],
+                "error": errors.get(l["k"], ""), "base": l["q"]["base"], "dur": l["q"]["dur"], "dur_bp": l["q"]["dur_bp"],
+                "qty_disc": l["q"]["qty_disc"], "corp": l["q"]["corp"], "rent": l["q"]["rent"], "deposit": l["q"]["deposit"]}
+               for l in ctx["lines"]],
+        quote={k: q_[k] for k in ("units", "qty_bp", "corp_bp", "base", "dur", "qty", "corp", "auto_rent", "coupon", "coupon_ok",
+                                  "coupon_why", "max_points", "points", "points_k", "rent", "deposit", "grand", "savings")},
+        coupons=[{"uc": c["uc"], "ok": c["ok"], "why": c["why"]} for c in ctx["coupons"]], coupon=ctx["uc"],
+        balance=ctx["balance"], has_problem=ctx["has_problem"], count=len(ctx["lines"]))
+
+
+@app.route("/api/availability", methods=["POST"])
+def api_availability():
+    """Свободное количество на период для страницы инструмента (с учётом позиций, уже лежащих в корзине)."""
+    d = request.get_json(silent=True) or {}
+    try:
+        tool_id, qty = to_int(d.get("tool_id")), to_int(d.get("qty"), 0, 0, 9999)
+        start, end = parse_date(d.get("start")), parse_date(d.get("end"))
+        validate_period(start, end)
+        if qty < 1:
+            raise ValueError("Количество должно быть не меньше 1.")
+        tool_row = _tool_rows([tool_id]).get(tool_id)
+        if not tool_row or not tool_row["active"]:
+            raise ValueError("Инструмент недоступен для аренды.")
+        items, idx = prospective_items(tool_id, qty, start, end)
+        a = lines_availability(items)[idx]
+        return jsonify(ok=a["ok"], free=a["free"], stock=a["stock"], message=a["message"], error="")
+    except ValueError as e:
+        return jsonify(ok=False, free=0, stock=0, message="", error=str(e))
+
+PICKUPS_PATH = os.path.join(BASE_DIR, "pickup_points.json")
+ORDER_META_PATH = os.path.join(BASE_DIR, "order_meta.json")
+JSON_LOCK = threading.RLock()
+
+
+def json_load(path, default):
+    with JSON_LOCK:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return default
+        except ValueError:                 # повреждённый файл не затираем, а откладываем в сторону
+            os.replace(path, f"{path}.broken-{int(time.time())}")
+            print(f"[ToolRent] {os.path.basename(path)} повреждён, сохранён как .broken-*, начат пустой.")
+            return default
+
+
+def json_save(path, data):
+    with JSON_LOCK:
+        tmp = path + ".tmp"                # сначала во временный файл, потом атомарная замена
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+
+
+def pickups_load():
+    d = json_load(PICKUPS_PATH, {"next_id": 1, "points": []})
+    d.setdefault("points", [])
+    d.setdefault("next_id", 1 + max([p["id_pickup"] for p in d["points"]] or [0]))
+    return d
+
+
+def all_pickups():
+    return sorted(pickups_load()["points"], key=lambda p: p["id_pickup"])
+
+
+def active_pickups():
+    return sorted((p for p in pickups_load()["points"] if p.get("active")),
+                  key=lambda p: (p["name"].lower(), p["id_pickup"]))
+
+
+def save_order_meta(rid, lg):
+    if not lg:
+        return
+    with JSON_LOCK:
+        meta = json_load(ORDER_META_PATH, {})
+        meta[str(rid)] = {"object": lg.get("object"), "pickup": lg.get("pickup"),
+                          "delivery_address": lg.get("address")}
+        json_save(ORDER_META_PATH, meta)
+
+
+def attach_meta(orders):
+    """Добавляет к строкам заявок object / pickup / delivery_address из order_meta.json (у старых заявок их нет → None)."""
+    meta = json_load(ORDER_META_PATH, {})
+    for o in orders:
+        m = meta.get(str(o["id_rent"])) or {}
+        o["object"], o["pickup"], o["delivery_address"] = m.get("object"), m.get("pickup"), m.get("delivery_address")
+    return orders
+
+def parse_logistics(delivery, pickups):
+    """Проверяет объект, точку самовывоза / адрес доставки. Всё берётся из формы, но точка — только из активных."""
+    my_addr = (g.user["address"] or "").strip()
+    if request.form.get("use_my_address") == "1":
+        if not my_addr:
+            raise ValueError("В личном кабинете не указан адрес. Укажите его или впишите объект вручную.")
+        obj = my_addr
     else:
-        points = 0
-    total = money(subtotal - disc_c - disc_p)
-    return dict(lines=lines, subtotal=money(subtotal), deposit=money(deposit), coupons=coupons, uc=selected_uc if chosen else 0,
-                disc_c=disc_c, disc_p=disc_p, points=points, total=total, delivery=delivery,
-                has_problem=any(l["qty"] > l["free"] for l in lines))
+        obj = field("object", 255, True, "Объект")
+    pickup = address = None
+    if delivery == "Самовывоз":
+        p = next((x for x in pickups if x["id_pickup"] == to_int(request.form.get("pickup_id"))), None)
+        if not p:
+            raise ValueError("Выберите точку самовывоза.")
+        pickup = f"{p['name']} — {p['address']} ({p['schedule']})"[:255]
+    else:
+        address = field("delivery_address", 255, True, "Точный адрес доставки")
+    return {"object": obj[:255], "pickup": pickup, "address": address}
 
 
 @app.route("/booking", methods=["GET", "POST"])
 def booking():
-    uc, points, delivery, errors = 0, 0, "Самовывоз", []
+    if not g.user:
+        flash("Чтобы оформить заявку, войдите в аккаунт или зарегистрируйтесь. Корзина сохранена.")
+        return redirect(url_for("login", next=url_for("booking")))
+    ctx = cart_context()
+    if not ctx["lines"]:
+        flash("Корзина пуста.")
+        return redirect(url_for("cart"))
+    pickups = active_pickups()
+    b2b_blocked = ""
+    if current_mode() == "b2b":
+        if g.user["role"] != ROLE_B2B:
+            b2b_blocked = "В режиме «Бизнесу» оформление доступно только после подтверждения бизнес-статуса администратором."
+        elif not b2b_docs_approved(g.user["id_user"]):
+            b2b_blocked = "Оба документа (Карточка организации и Доверенность) должны быть загружены и подтверждены администратором."
+    ctx.update(pickups=pickups, form={}, my_address=(g.user["address"] or "").strip(), b2b_blocked=b2b_blocked)
     if request.method == "POST":
-        errors = apply_line_edits()
-        uc, points = to_int(request.form.get("coupon")), to_int(request.form.get("points"))
-        delivery = request.form.get("delivery", "Самовывоз")
-        action = request.form.get("action", "update")
-        if action == "submit" and not errors:
-            if not g.user:
-                flash("Войдите в аккаунт, чтобы отправить заявку.")
-                return redirect(url_for("login", next=url_for("booking")))
-            if not g.user["email_ok"]:
-                errors.append("Подтвердите электронную почту, чтобы отправить заявку (письмо можно отправить повторно в личном кабинете).")
-            else:
-                try:
-                    view = booking_view(uc, points, delivery)
-                    rid = create_order(g.user, view["lines"], view["uc"], view["points"], delivery)
-                    session["cart"] = []
-                    flash(f"Заявка №{rid} отправлена. Статус можно отслеживать в личном кабинете.")
-                    return redirect(url_for("profile_order", rid=rid))
-                except ValueError as e:
-                    errors.append(str(e))
-    for e in errors:
-        flash(e)
-    return render_template("booking.html", **booking_view(uc, points, delivery))
+        if b2b_blocked:
+            flash(b2b_blocked)
+            return redirect(url_for("booking"))
 
+        save_cart_opts(delivery=request.form.get("delivery"))
+        ctx["delivery"] = cart_opts()["delivery"]
+        if ctx["has_problem"]:
+            flash("Часть позиций недоступна на выбранные даты. Измените их в корзине.")
+            return redirect(url_for("cart"))
+        try:
+            lg = parse_logistics(ctx["delivery"], pickups)
+        except ValueError as e:                      # остаёмся на странице, введённое не теряется
+            flash(str(e))
+            ctx["form"] = request.form
+            return render_template("booking.html", **ctx)
+        try:
+            rid = create_order(g.user, ctx["lines"], ctx["uc"], ctx["points"], ctx["delivery"], lg)
+        except ValueError as e:
+            flash(str(e))
+            return redirect(url_for("cart"))
+        session["cart"] = []
+        session.pop("cart_opts", None)
+        flash(f"Заявка №{rid} отправлена. Статус можно отслеживать в личном кабинете.")
+        return redirect(url_for("profile_order", rid=rid))
+    return render_template("booking.html", **ctx)
 
 # ---------------------------------------------------------------------------
 # Регистрация, вход, подтверждение почты, восстановление пароля
@@ -1299,17 +2123,26 @@ def check_email(v):
 
 
 def send_verification(uid, email):
-    with Tx() as t:
-        raw = make_token(t, uid, "email")
-    send_email(email, "Подтвердите почту на ToolRent",
-               f"Здравствуйте!\n\nЧтобы подтвердить адрес электронной почты, перейдите по ссылке (действует {TOKEN_HOURS['email']} ч.):\n"
-               f"{base_url()}/verify/{raw}\n\nЕсли вы не регистрировались на ToolRent, просто проигнорируйте это письмо.")
+    """Письмо подтверждения. Подтверждение почты необязательно: любая ошибка здесь не должна ломать регистрацию."""
+    try:
+        with Tx() as t:
+            raw = make_token(t, uid, "email")
+        send_email(email, "Подтвердите почту на ToolRent",
+                   f"Здравствуйте!\n\nЧтобы подтвердить адрес электронной почты, перейдите по ссылке (действует {TOKEN_HOURS['email']} ч.):\n"
+                   f"{base_url()}/verify/{raw}\n\nЕсли вы не регистрировались на ToolRent, просто проигнорируйте это письмо.")
+    except Exception as e:
+        print("[ToolRent] письмо подтверждения не отправлено:", e)
 
 
 def login_user(uid, remember=True):
+    keep = {k: session[k] for k in ("cart", "cart_opts", "mode") if k in session}    # корзина гостя не теряется при входе
     session.clear()
+    session.update(keep)
     session["uid"] = uid
     session.permanent = remember
+    row = q1("SELECT [Роль] AS role FROM [Пользователь] WHERE [id_user] = ?", [uid])
+    if row and row["role"] == ROLE_B2B:
+        session["mode"] = "b2b"            # подтверждённый бизнес-клиент по умолчанию работает в бизнес-режиме
     csrf_token()
 
 
@@ -1341,10 +2174,12 @@ def register():
             flash(str(e))
             return render_template("register.html", form=request.form), 400
         send_verification(uid, email)
+        nxt = safe_next("profile")
         login_user(uid)
-        flash("Аккаунт создан. " + ("Мы отправили письмо со ссылкой для подтверждения почты." if _env("TOOLRENT_SMTP_HOST")
-                                    else "Отправка почты на сервере не настроена: подтвердить адрес может администратор."))
-        return redirect(url_for("profile"))
+        flash("Аккаунт создан. " + ("Мы отправили письмо со ссылкой для подтверждения почты, но она необязательна: "
+                                    "сайтом можно пользоваться сразу." if _env("TOOLRENT_SMTP_HOST")
+                                    else "Подтверждение почты необязательно: сайтом можно пользоваться сразу."))
+        return redirect(nxt)
     return render_template("register.html", form={})
 
 
@@ -1451,6 +2286,18 @@ def reset_password(token):
 # ---------------------------------------------------------------------------
 # Личный кабинет
 # ---------------------------------------------------------------------------
+PAID_MARK = "Демо-оплата"      # запись в ИсторияСтатусов с этим началом комментария = демонстрационная оплата выполнена
+
+
+def paid_set(rids):
+    out = set()
+    for part in _chunks(rids):
+        for h in q(f"SELECT [id_rent], [Комментарий] FROM [ИсторияСтатусов] WHERE [id_rent] IN ({', '.join(['?'] * len(part))})", part):
+            if (h["comment"] or "").startswith(PAID_MARK):
+                out.add(h["id_rent"])
+    return out
+
+
 ORG_TYPES = ["ИП", "ООО", "АО", "ПАО", "Самозанятый", "Другое"]
 KPP_REQUIRED = ("ООО", "АО", "ПАО")
 SECTIONS = [("overview", "Личные данные"), ("orders", "История аренд"), ("points", "Баллы"), ("coupons", "Купоны"),
@@ -1463,8 +2310,11 @@ def orders_with_counts(uid):
     for part in _chunks([o["id_rent"] for o in orders]):
         for p in q(f"SELECT * FROM [ПозицияБронирования] WHERE [id_rent] IN ({', '.join(['?'] * len(part))})", part):
             counts[p["id_rent"]] = counts.get(p["id_rent"], 0) + 1
+    paid = paid_set([o["id_rent"] for o in orders])
     for o in orders:
         o["n_items"] = counts.get(o["id_rent"], 0)
+        o["paid"] = o["id_rent"] in paid
+    attach_meta(orders)
     return orders
 
 
@@ -1494,7 +2344,8 @@ def profile(section="overview"):
     elif section == "activity":
         data = dict(act=activity_data(u["id_user"]), kinds=ACT_KINDS)
     elif section == "business":
-        data = dict(org=q1("SELECT * FROM [B2B_Реквизиты] WHERE [id_user] = ?", [u["id_user"]]), org_types=ORG_TYPES)
+        data = dict(org=q1("SELECT * FROM [B2B_Реквизиты] WHERE [id_user] = ?", [u["id_user"]]),
+                    org_types=ORG_TYPES, b2b_docs=user_b2b_docs(u["id_user"]))
     return render_template("profile.html", section=section, sections=SECTIONS, **data)
 
 
@@ -1519,6 +2370,7 @@ def profile_order(rid):
     order = q1("SELECT * FROM [Бронирование] WHERE [id_rent] = ? AND [id_user] = ?", [rid, g.user["id_user"]])
     if not order:
         abort(404)
+    attach_meta([order])
     pos = sorted(q("SELECT * FROM [ПозицияБронирования] WHERE [id_rent] = ?", [rid]), key=lambda p: p["id_item"])
     tools = tools_by_ids({p["id_tool"] for p in pos}, include_inactive=True)
     hist = {p["id_item"]: [] for p in pos}
@@ -1534,8 +2386,36 @@ def profile_order(rid):
         p["reason"] = clean_text(rej[-1]["comment"]) if rej else ""
     history = sorted(q("SELECT * FROM [ИсторияСтатусов] WHERE [id_rent] = ?", [rid]), key=lambda h: h["id_log"])
     can_cancel = order["status"] in (O_NEW, O_WORK) and not any(p["status"] in (P_OUT, P_BACK) for p in pos)
+    paid = order["id_rent"] in paid_set([rid])
+    pay_k = kop(order["rent_sum"]) + kop(order["deposit_sum"])
     return render_template("profile.html", section="order", sections=SECTIONS, order=order, positions=pos,
-                           history=history, can_cancel=can_cancel)
+                           history=history, can_cancel=can_cancel, paid=paid, pay_k=pay_k,
+                           can_pay=(not paid) and order["status"] not in (O_NO, O_CANCEL))
+
+
+@app.route("/profile/orders/<int:rid>/pay", methods=["POST"])
+@login_required
+def profile_order_pay(rid):
+    """Демонстрационная оплата: реальных денежных операций нет, платёжных данных не принимается и не хранится."""
+    try:
+        with Tx() as t:
+            order = t.one("SELECT * FROM [Бронирование] WHERE [id_rent] = ? AND [id_user] = ?", [rid, g.user["id_user"]])
+            if not order:
+                abort(404)
+            if order["status"] in (O_NO, O_CANCEL):
+                raise ValueError("Эта заявка не подлежит оплате.")
+            if any((h["comment"] or "").startswith(PAID_MARK) for h in t.q(
+                    "SELECT [Комментарий] FROM [ИсторияСтатусов] WHERE [id_rent] = ?", [rid])):
+                raise ValueError("Заявка уже оплачена.")
+            amount = from_k(kop(order["rent_sum"]) + kop(order["deposit_sum"]))
+            t.insert("ИсторияСтатусов", {"id_rent": rid, "СтарыйСтатус": order["status"], "НовыйСтатус": order["status"],
+                                         "КтоИзменил_id_user": g.user["id_user"], "Когда": now(),
+                                         "Комментарий": f"{PAID_MARK}: выполнена, {rub(amount)} (аренда и залог). Реальных денежных операций нет."})
+        notify(g.user["id_user"], "Оплата успешно выполнена", f"Заявка №{rid}: демонстрационная оплата на {rub(amount)} выполнена.", "Заявка", rid, mail=False)
+        flash("Оплата успешно выполнена")
+    except ValueError as e:
+        flash(str(e))
+    return redirect(url_for("profile_order", rid=rid))
 
 
 @app.route("/profile/orders/<int:rid>/cancel", methods=["POST"])
@@ -1622,6 +2502,40 @@ def business_save():
             raise ValueError("Для выбранной формы организации КПП обязателен.")
         if kpp and not (kpp.isdigit() and len(kpp) == 9):
             raise ValueError("КПП должен состоять из 9 цифр.")
+        cur_docs = user_b2b_docs(u["id_user"])
+        saved_files = {}
+        os.makedirs(CLIENT_DOCS_DIR, exist_ok=True)
+        for kind, label in DOC_KINDS.items():
+            fs = request.files.get(f"doc_{kind}")
+            if fs and fs.filename:
+                orig = os.path.basename(fs.filename)
+                if not orig.lower().endswith(".pdf"):
+                    raise ValueError(f"Файл «{label}» должен быть в формате PDF.")
+                raw = fs.read()
+                if not raw.startswith(b"%PDF-"):
+                    raise ValueError(f"Файл «{label}» повреждён или не является PDF.")
+                fname = f"u{u['id_user']}_{kind}_{secrets.token_hex(4)}.pdf"
+                with open(os.path.join(CLIENT_DOCS_DIR, fname), "wb") as f:
+                    f.write(raw)
+                saved_files[kind] = {"file": fname, "orig": orig, "status": "pending",
+                                     "reason": "", "at": now().strftime("%d.%m.%Y %H:%M")}
+            elif not cur_docs.get(kind):
+                raise ValueError(f"Прикрепите PDF-файл: {label}.")
+        if saved_files:
+            with JSON_LOCK:
+                all_d = json_load(CLIENT_DOCS_PATH, {})
+                u_d = all_d.get(str(u["id_user"]), {})
+                for k, v in saved_files.items():
+                    old = u_d.get(k, {}).get("file")
+                    if old and old != v["file"]:
+                        try:
+                            os.remove(os.path.join(CLIENT_DOCS_DIR, old))
+                        except OSError:
+                            pass
+                    u_d[k] = v
+                all_d[str(u["id_user"])] = u_d
+                json_save(CLIENT_DOCS_PATH, all_d)
+
         with Tx() as t:
             row = t.one("SELECT * FROM [B2B_Реквизиты] WHERE [id_user] = ?", [u["id_user"]])
             vals = {"ТипОрганизации": org, "НазваниеКомпании": company, "ИНН": inn, "КПП": kpp or None, "ЮрАдрес": addr}
@@ -1629,11 +2543,17 @@ def business_save():
                 t.update("B2B_Реквизиты", "id_b2b", row["id_b2b"], vals)
             else:
                 t.insert("B2B_Реквизиты", {"id_user": u["id_user"], **vals})
-            if u["role"] == ROLE_USER:
-                t.update("Пользователь", "id_user", u["id_user"], {"Роль": ROLE_B2B})
+            admins = admin_ids(t)
         if u["role"] == ROLE_USER:
-            notify(u["id_user"], "Бизнес-профиль подключён", f"Реквизиты «{company}» сохранены. Заказы, баллы и купоны остались в вашем аккаунте.", "Система")
-            flash("Бизнес-профиль подключён.")
+            again = bool(row)
+            notify(u["id_user"], "Заявка на бизнес-статус отправлена",
+                   f"Реквизиты «{company}» (ИНН {inn}) отправлены администратору. Пока заявка не подтверждена, скидка для бизнеса "
+                   "не действует. Мы сообщим о решении.", "Система")
+            for aid in admins:
+                notify(aid, "Заявка на бизнес-статус" + (" (данные обновлены)" if again else ""),
+                       f"Пользователь {u['login']} ({u['fio']}) просит бизнес-статус: {org} «{company}», ИНН {inn}. "
+                       "Откройте его карточку в админ-панели («Пользователи») и подтвердите или отклоните заявку.", "Система")
+            flash("Заявка отправлена администратору. Бизнес-статус и скидка появятся после подтверждения.")
         else:
             flash("Реквизиты сохранены.")
     except ValueError as e:
@@ -1666,7 +2586,9 @@ def admin_home():
     users = q("SELECT * FROM [Пользователь]")
     recent = sorted(q("SELECT * FROM [Бронирование]"), key=lambda o: -o["id_rent"])[:8]
     um = user_map(o["id_user"] for o in recent)
-    return adm("home", n_new=count(P_NEW), n_ok=count(P_OK), n_out=count(P_OUT), n_over=len(overdue),
+    orgs = {r["id_user"] for r in q("SELECT [id_user] FROM [B2B_Реквизиты]")}
+    n_b2b = len([u for u in users if u["role"] == ROLE_USER and u["id_user"] in orgs])
+    return adm("home", n_b2b=n_b2b, n_new=count(P_NEW), n_ok=count(P_OK), n_out=count(P_OUT), n_over=len(overdue),
                n_unconfirmed=len([u for u in users if not u["email_ok"]]), n_blocked=len([u for u in users if not u["active"]]),
                recent=recent, um=um)
 
@@ -1710,7 +2632,8 @@ def admin_tool_save():
     tool_id = to_int(request.form.get("id"))
     try:
         vals = {"Название": field("name", 255, True, "Название"), "Описание": field("descr", 20000) or None,
-                "Характеристики": field("specs", 20000) or None,
+                "Характеристики": (join_specs(request.form.getlist("spec_k"), request.form.getlist("spec_v"))
+                                   + "\n" + "\n".join(f"{k}: {v}" if k else v for k, v in parse_specs(request.form.get("specs_bulk", "")))).strip()[:20000] or None,
                 "ЦенаЗаСутки": to_money(request.form.get("price", ""), "Цена за сутки"),
                 "Залог": to_money(request.form.get("deposit", "0") or "0", "Залог"),
                 "КоличествоНаСкладе": to_int(request.form.get("stock"), 0, 0, 100000),
@@ -1726,16 +2649,30 @@ def admin_tool_save():
         ext = sniff_image(data) if data else None
         if data and (not ext or len(data) > 5 * 1024 * 1024):
             raise ValueError("Фото: допустимы JPG, PNG или WEBP размером до 5 МБ.")
-        with Tx() as t:
+        with ORDER_LOCK, Tx() as t:
             old_photo = None
             if tool_id:
                 old = t.one("SELECT * FROM [Инструмент] WHERE [id_tool] = ?", [tool_id])
                 if not old:
                     raise ValueError("Инструмент не найден.")
                 old_photo = old["photo"]
+                owned = capacity_map(t).get(tool_id, (0, 0))[1]
+                if has_instances(t, tool_id) and vals["КоличествоНаСкладе"] < owned:
+                    raise ValueError(f"Количество экземпляров ({owned}) нельзя уменьшить вручную: спишите лишние экземпляры "
+                                     "на странице «Экземпляры».")
                 t.update("Инструмент", "id_tool", tool_id, vals)
             else:
+                art = (request.form.get("article") or "").strip().upper()      # необязательно: иначе серия назначается сама
+                if art:
+                    m = re.match(r"^([A-Z]{3})(-000000)?$", art)
+                    if not m:
+                        raise ValueError("Артикул: три латинские буквы серии, например ABC (или ABC-000000).")
+                    taken = {(ARTICLE_RE.match((r["article"] or "").upper()) or [None, None])[1] for r in t.q("SELECT [Артикул] FROM [Инструмент]")}
+                    if m.group(1) in taken:
+                        raise ValueError("Такая серия артикулов уже используется другой моделью.")
+                    vals["Артикул"] = f"{m.group(1)}-000000"
                 tool_id = t.insert("Инструмент", vals)
+            sync_tool(t, tool_id, g.user["id_user"])      # серия и экземпляры по количеству
             if data:
                 name = f"tool_{tool_id}_{secrets.token_hex(4)}.{ext}"
                 with open(os.path.join(IMG_DIR, name), "wb") as f:
@@ -1754,6 +2691,53 @@ def admin_tool_save():
     except ValueError as e:
         flash(str(e))
         return redirect(url_for("admin_tool_form", tool_id=tool_id) if tool_id else url_for("admin_tool_form"))
+
+
+@app.route("/admin/tools/<int:tool_id>/instances")
+@admin_required
+def admin_instances(tool_id):
+    tool = get_tool(tool_id, include_inactive=True)
+    if not tool:
+        abort(404)
+    insts = sorted(q("SELECT * FROM [ФизическийЭкземпляр] WHERE [id_tool] = ?", [tool_id]),
+                   key=lambda i: (i["state"] == STATE_OFF, i["id_instance"]))
+    ids = [i["id_instance"] for i in insts]
+    asg, jr = {i: [] for i in ids}, {i: [] for i in ids}
+    for part in _chunks(ids):
+        ph = ", ".join(["?"] * len(part))
+        for a in q(f"SELECT * FROM [ЭкземплярыПозиции] WHERE [id_instance] IN ({ph})", part):
+            asg[a["id_instance"]].append(a)
+        for j in q(f"SELECT * FROM [ЖурналЭкземпляров] WHERE [id_instance] IN ({ph})", part):
+            jr[j["id_instance"]].append(j)
+    items = {}
+    for part in _chunks({a["id_item"] for v in asg.values() for a in v}):
+        for p in q(f"SELECT * FROM [ПозицияБронирования] WHERE [id_item] IN ({', '.join(['?'] * len(part))})", part):
+            items[p["id_item"]] = p
+    for i in insts:
+        i["asg"] = sorted(asg[i["id_instance"]], key=lambda a: -a["id_instance_rent"])
+        for a in i["asg"]:
+            a["item"] = items.get(a["id_item"])
+        i["current"] = next((a for a in i["asg"] if a["status"] in (A_ASSIGNED, A_OUT)), None)
+        i["log"] = sorted(jr[i["id_instance"]], key=lambda j: -j["id_log"])[:40]
+        grades = [a["grade"] for a in i["asg"] if a["grade"] is not None]
+        i["avg_grade"] = round(sum(grades) / len(grades)) if grades else None
+    um = user_map(j["by_user"] for i in insts for j in i["log"])
+    return adm("instances", tool=tool, insts=insts, states=INSTANCE_STATES, um=um)
+
+
+@app.route("/admin/instances/<int:iid>/state", methods=["POST"])
+@admin_required
+def admin_instance_state(iid):
+    tool_id = 0
+    try:
+        tool_id, repaired = change_instance_state(g.user, iid, request.form.get("state", ""), field("comment", 255))
+        flash("Ремонт завершён, администраторам отправлено уведомление. Подтвердите приёмку, выбрав состояние «Доступен»."
+              if repaired else "Состояние экземпляра изменено.")
+    except ValueError as e:
+        flash(str(e))
+        row = q1("SELECT [id_tool] FROM [ФизическийЭкземпляр] WHERE [id_instance] = ?", [iid])
+        tool_id = row["id_tool"] if row else 0
+    return redirect(url_for("admin_instances", tool_id=tool_id) if tool_id else url_for("admin_tools"))
 
 
 @app.route("/admin/tools/<int:tool_id>/toggle", methods=["POST"])
@@ -1819,6 +2803,71 @@ def admin_dict_action(kind, action):
         flash(str(e))
     return redirect(url_for("admin_dicts"))
 
+@app.route("/admin/pickups")
+@admin_required
+def admin_pickups():
+    return adm("pickups", points=all_pickups())
+
+
+@app.route("/admin/pickups/save", methods=["POST"])
+@admin_required
+def admin_pickup_save():
+    pid = to_int(request.form.get("id"))
+    try:
+        vals = {"name": field("name", 255, True, "Название"), "address": field("address", 255, True, "Адрес"),
+                "schedule": field("schedule", 255, True, "График работы")}
+        with JSON_LOCK:
+            d = pickups_load()
+            if pid:
+                p = next((x for x in d["points"] if x["id_pickup"] == pid), None)
+                if not p:
+                    raise ValueError("Точка не найдена.")
+                p.update(vals)
+                what = "изменена"
+            else:
+                pid = d["next_id"]
+                d["next_id"] = pid + 1
+                d["points"].append({"id_pickup": pid, **vals, "active": True})
+                what = "создана"
+            json_save(PICKUPS_PATH, d)
+        with Tx() as t:
+            admin_log(t, g.user["id_user"], f"Точка самовывоза: {what}", None, f"№{pid} «{vals['name']}»")
+        flash("Готово.")
+    except (ValueError, OSError) as e:
+        flash(str(e))
+    return redirect(url_for("admin_pickups"))
+
+
+@app.route("/admin/pickups/<int:pid>/toggle", methods=["POST"])
+@admin_required
+def admin_pickup_toggle(pid):
+    with JSON_LOCK:
+        d = pickups_load()
+        p = next((x for x in d["points"] if x["id_pickup"] == pid), None)
+        if not p:
+            abort(404)
+        p["active"] = not p.get("active")
+        json_save(PICKUPS_PATH, d)
+    with Tx() as t:
+        admin_log(t, g.user["id_user"], "Точка самовывоза: " + ("включена" if p["active"] else "отключена"),
+                  None, f"№{pid} «{p['name']}»")
+    return redirect(url_for("admin_pickups"))
+
+
+@app.route("/admin/pickups/<int:pid>/delete", methods=["POST"])
+@admin_required
+def admin_pickup_delete(pid):
+    with JSON_LOCK:
+        d = pickups_load()
+        p = next((x for x in d["points"] if x["id_pickup"] == pid), None)
+        if not p:
+            abort(404)
+        d["points"] = [x for x in d["points"] if x["id_pickup"] != pid]
+        json_save(PICKUPS_PATH, d)
+    with Tx() as t:
+        admin_log(t, g.user["id_user"], "Точка самовывоза: удалена", None, f"№{pid} «{p['name']}»")
+    flash("Точка удалена. В уже созданных заявках она сохранится.")
+    return redirect(url_for("admin_pickups"))
 
 # --- заявки --------------------------------------------------------------
 @app.route("/admin/orders")
@@ -1828,7 +2877,9 @@ def admin_orders():
     orders = sorted(q("SELECT * FROM [Бронирование]"), key=lambda o: -o["id_rent"])
     if status:
         orders = [o for o in orders if o["status"] == status]
+    attach_meta(orders[:300])
     return adm("orders", orders=orders[:300], um=user_map(o["id_user"] for o in orders[:300]), status=status,
+               paid=paid_set([o["id_rent"] for o in orders[:300]]),
                statuses=[O_NEW, O_WORK, O_RENT, O_DONE, O_NO, O_CANCEL])
 
 
@@ -1838,6 +2889,7 @@ def admin_order(rid):
     order = q1("SELECT * FROM [Бронирование] WHERE [id_rent] = ?", [rid])
     if not order:
         abort(404)
+    attach_meta([order])
     pos = sorted(q("SELECT * FROM [ПозицияБронирования] WHERE [id_rent] = ?", [rid]), key=lambda p: p["id_item"])
     tools = tools_by_ids({p["id_tool"] for p in pos}, include_inactive=True)
     um = user_map(h["by_user"] for h in q("SELECT * FROM [ИсторияСтатусов] WHERE [id_rent] = ?", [rid]))
@@ -1851,11 +2903,17 @@ def admin_order(rid):
             p["tool"] = tools.get(p["id_tool"])
             p["days"] = rent_days(p["start"], p["end"])
             p["sum"] = D(p["price_at"]) * p["qty"] * p["days"]
-            p["free"] = tool_free(t, p["id_tool"], p["tool"]["stock"], as_dt(p["start"]), as_dt(p["end"])) if p["tool"] else 0
+            p["free"] = tool_free(t, p["id_tool"], p["tool"]["stock"], as_dt(p["start"]), as_dt(p["end"]), exclude_item=p["id_item"]) if p["tool"] else 0
+            p["asg"] = []
+            for a in t.q("SELECT * FROM [ЭкземплярыПозиции] WHERE [id_item] = ?", [p["id_item"]]):
+                if a["status"] != A_CANCEL:
+                    a["inst"] = t.one("SELECT * FROM [ФизическийЭкземпляр] WHERE [id_instance] = ?", [a["id_instance"]])
+                    p["asg"].append(a)
             p["history"] = sorted(hist[p["id_item"]], key=lambda h: h["id_item_log"])
     history = sorted(q("SELECT * FROM [ИсторияСтатусов] WHERE [id_rent] = ?", [rid]), key=lambda h: h["id_log"])
     um.update(user_map(h["by_user"] for p in pos for h in p["history"]))
-    return adm("order", order=order, positions=pos, history=history, um=um, customer=um.get(order["id_user"]))
+    return adm("order", order=order, positions=pos, history=history, um=um, customer=um.get(order["id_user"]),
+               paid=rid in paid_set([rid]))
 
 
 @app.route("/admin/orders/<int:rid>/item", methods=["POST"])
@@ -1866,7 +2924,7 @@ def admin_order_item(rid):
         it = q1("SELECT * FROM [ПозицияБронирования] WHERE [id_item] = ? AND [id_rent] = ?", [item, rid])
         if not it:
             raise ValueError("Позиция не найдена.")
-        admin_item_action(g.user, item, request.form.get("action", ""), field("reason", 255))
+        admin_item_action(g.user, item, request.form.get("action", ""), field("reason", 255), request.form)
         flash("Готово.")
     except ValueError as e:
         flash(str(e))
@@ -1881,7 +2939,12 @@ def admin_users():
     users = q("SELECT * FROM [Пользователь]")
     if q_:
         users = [u for u in users if any(q_ in (u[k] or "").casefold() for k in ("login", "fio", "email", "phone"))]
-    return adm("users", users=sorted(users, key=lambda u: -u["id_user"])[:300], q=request.args.get("q", ""))
+    orgs = {r["id_user"] for r in q("SELECT [id_user] FROM [B2B_Реквизиты]")}
+    wait = {u["id_user"] for u in users if u["role"] == ROLE_USER and u["id_user"] in orgs}
+    flt = request.args.get("f", "")
+    if flt == "b2b_wait":
+        users = [u for u in users if u["id_user"] in wait]
+    return adm("users", users=sorted(users, key=lambda u: -u["id_user"])[:300], q=request.args.get("q", ""), wait=wait, flt=flt)
 
 
 @app.route("/admin/users/<int:uid>")
@@ -1895,7 +2958,8 @@ def admin_user(uid):
     journal = sorted(q("SELECT * FROM [ИсторияДействийАдминистратора] WHERE [id_user_target] = ?", [uid]),
                      key=lambda j: -j["id_action"])[:15]
     all_coupons = q("SELECT * FROM [Купон] WHERE [Активен] = ?", [True])
-    return adm("user", u=u, org=q1("SELECT * FROM [B2B_Реквизиты] WHERE [id_user] = ?", [uid]), stats=user_stats(uid),
+    org = q1("SELECT * FROM [B2B_Реквизиты] WHERE [id_user] = ?", [uid])
+    return adm("user", u=u, org=org, b2b_docs=user_b2b_docs(uid), pending=bool(org and u["role"] == ROLE_USER), stats=user_stats(uid),
                orders=orders_with_counts(uid)[:10], coupons=q_coupons(uid), ops=ops, journal=journal,
                coupon_list=all_coupons, adm_names=user_map(j["id_user_admin"] for j in journal))
 
@@ -1925,6 +2989,48 @@ def admin_user_action(uid, action):
                 t.update("Пользователь", "id_user", uid, {"EmailПодтвержден": True})
                 admin_log(t, me["id_user"], "Почта подтверждена вручную", uid, f"Email: {u['email']}")
                 notes.append((uid, "Почта подтверждена", "Администратор подтвердил ваш адрес электронной почты.", "Система", None, False))
+            elif action == "b2b-approve":
+                org_row = t.one("SELECT * FROM [B2B_Реквизиты] WHERE [id_user] = ?", [uid])
+                if u["role"] != ROLE_USER or not org_row:
+                    raise ValueError("Нет заявки на бизнес-статус.")
+                if not b2b_docs_approved(uid):
+                    raise ValueError("Сначала подтвердите оба документа клиента (Карточку организации и Доверенность).")
+                t.update("Пользователь", "id_user", uid, {"Роль": ROLE_B2B})
+                admin_log(t, me["id_user"], "Бизнес-статус подтверждён", uid, f"{org_row['company']}, ИНН {org_row['inn']}")
+                notes.append((uid, "Бизнес-статус подтверждён",
+                              f"Администратор подтвердил бизнес-профиль «{org_row['company']}». Включите режим «Бизнесу» в шапке сайта: "
+                              f"скидка для бизнеса {fmt_pct(_bp(CORPORATE_DISCOUNT_PERCENT))} действует на всю аренду (залог без скидки).", "Система"))
+            elif action == "doc-review":
+                kind = request.form.get("kind", "")
+                decision = request.form.get("decision", "")
+                if kind not in DOC_KINDS or decision not in ("approved", "rejected"):
+                    raise ValueError("Неверные параметры проверки документа.")
+                reason = field("reason", 255, decision == "rejected", "Причина отклонения")
+                with JSON_LOCK:
+                    all_d = json_load(CLIENT_DOCS_PATH, {})
+                    u_d = all_d.get(str(uid)) or {}
+                    if kind not in u_d:
+                        raise ValueError("Документ ещё не загружен клиентом.")
+                    u_d[kind]["status"] = decision
+                    u_d[kind]["reason"] = reason if decision == "rejected" else ""
+                    all_d[str(uid)] = u_d
+                    json_save(CLIENT_DOCS_PATH, all_d)
+                word = "подтверждён" if decision == "approved" else "отклонён"
+                admin_log(t, me["id_user"], f"Документ {word}: {DOC_KINDS[kind]}", uid, reason)
+                notes.append((uid, f"Документ {word}",
+                              f"Документ «{DOC_KINDS[kind]}» {word} администратором."
+                              + (f" Причина: {reason}. Загрузите исправленный файл в бизнес-профиле." if decision == "rejected" else ""),
+                              "Система"))
+
+            elif action == "b2b-reject":
+                org_row = t.one("SELECT * FROM [B2B_Реквизиты] WHERE [id_user] = ?", [uid])
+                if u["role"] != ROLE_USER or not org_row:
+                    raise ValueError("Нет заявки на бизнес-статус.")
+                reason = field("reason", 255, True, "Причина отказа")
+                t.x("DELETE FROM [B2B_Реквизиты] WHERE [id_user] = ?", [uid])
+                admin_log(t, me["id_user"], "Заявка на бизнес-статус отклонена", uid, reason)
+                notes.append((uid, "Заявка на бизнес-статус отклонена",
+                              f"Причина: {reason}. Вы можете исправить данные и отправить заявку снова в личном кабинете.", "Система"))
             elif action == "points":
                 try:
                     delta = int(request.form.get("delta", "0").replace(" ", ""))
@@ -1994,10 +3100,10 @@ def admin_coupon_save():
     cid = to_int(request.form.get("id"))
     try:
         kind = request.form.get("disc_type")
-        if kind not in ("Процент", "Сумма"):
+        if kind not in (COUPON_PERCENT, COUPON_FIXED):
             raise ValueError("Выберите тип скидки.")
         amount = to_money(request.form.get("amount", ""), "Размер скидки")
-        if amount <= 0 or (kind == "Процент" and amount > 100):
+        if amount <= 0 or (kind == COUPON_PERCENT and amount > 100):
             raise ValueError("Размер скидки: процент от 1 до 100 или сумма больше нуля.")
         start, end = parse_date(request.form.get("start")), parse_date(request.form.get("end"))
         if start and end and end < start:
@@ -2074,7 +3180,12 @@ DB_EXPECTED = {
                      "Активен", "ПричинаБлокировки", "ДатаБлокировки", "ДатаРегистрации"],
     "B2B_Реквизиты": ["id_b2b", "id_user", "НазваниеКомпании", "ИНН", "КПП", "ЮрАдрес", "ТипОрганизации"],
     "Инструмент": ["id_tool", "id_brand", "Название", "Описание", "Характеристики", "ЦенаЗаСутки", "Залог",
-                   "КоличествоНаСкладе", "ИмяФото", "Активен", "id_category"],
+                   "КоличествоНаСкладе", "ИмяФото", "Активен", "id_category", "Артикул"],
+    "ФизическийЭкземпляр": ["id_instance", "id_tool", "ИнвентарныйКод", "Состояние", "ДатаДобавления", "Примечание"],
+    "ЭкземплярыПозиции": ["id_instance_rent", "id_item", "КодВыдачи", "Статус", "ОценкаКачества", "Комментарий", "ДатаВыдачи",
+                          "ДатаВозврата", "КтоОсмотрел_id_user", "id_instance"],
+    "ЖурналЭкземпляров": ["id_log", "id_instance", "id_instance_rent", "ИнвентарныйКодНаМомент", "Событие", "СостояниеДо",
+                          "СостояниеПосле", "ОценкаКачества", "Комментарий", "ДатаСобытия", "КтоИзменил_id_user"],
     "Бренд": ["id_brand", "Название"], "Категория": ["id_category", "Название"],
     "Бронирование": ["id_rent", "id_user", "ДатаСоздания", "Статус", "СуммаАренды", "СуммаЗалога", "СпособДоставки",
                      "СуммаДоСкидки", "СуммаСкидки"],
@@ -2145,10 +3256,300 @@ def make_admin(login_):
     return f"Готово: «{login_}» — администратор."
 
 
+# ---------------------------------------------------------------------------
+# Информационные страницы ToolRent
+# ---------------------------------------------------------------------------
+
+INFO_PAGES = {
+    "about": {
+        "title": "О нас",
+        "lead": (
+            "ToolRent — сервис для удобного подбора и аренды "
+            "строительного и профессионального инструмента."
+        ),
+        "blocks": [
+            (
+                "Инструмент для ваших задач",
+                "В каталоге ToolRent можно подобрать оборудование "
+                "для строительных, монтажных, ремонтных и других работ. "
+                "В карточке инструмента указаны основные характеристики, "
+                "стоимость аренды и размер залога."
+            ),
+            (
+                "Для частных и корпоративных клиентов",
+                "Сервис рассчитан как на частных пользователей, так и на "
+                "организации. Для компаний предусмотрена подача заявки "
+                "на подтверждение бизнес-статуса администратором."
+            ),
+            (
+                "Контроль состояния оборудования",
+                "Каждый физический экземпляр инструмента учитывается отдельно. "
+                "После возврата оборудование проходит осмотр, по результатам "
+                "которого его можно вернуть в доступный фонд, отправить "
+                "на проверку или ремонт либо списать."
+            ),
+        ],
+    },
+
+    "geography": {
+        "title": "Где мы работаем",
+        "lead": (
+            "Доступность самовывоза и доставки зависит от действующих "
+            "точек получения и условий, указанных при оформлении заказа."
+        ),
+        "blocks": [
+            (
+                "Точки самовывоза",
+                "Если для выбранного заказа доступны активные точки самовывоза, "
+                "их можно выбрать при оформлении. Адрес и условия получения "
+                "уточняются в информации о конкретной точке."
+            ),
+            (
+                "Доставка",
+                "Если доставка доступна, её можно выбрать при оформлении заказа. "
+                "Возможность доставки и её условия зависят от настроек сервиса "
+                "и выбранного способа получения."
+            ),
+            (
+                "Проверяйте условия заказа",
+                "Перед отправкой заявки проверьте выбранный способ получения, "
+                "даты аренды и доступность инструмента. Если нужный вариант "
+                "получения не отображается, обратитесь к администратору."
+            ),
+        ],
+    },
+
+    "rules": {
+        "title": "Правила аренды",
+        "lead": (
+            "Основные этапы аренды инструмента в ToolRent: "
+            "выбор, бронирование, получение и возврат."
+        ),
+        "blocks": [
+            (
+                "1. Выбор и оформление",
+                "Выберите инструмент, укажите количество и даты аренды, "
+                "добавьте позиции в корзину и проверьте итоговый расчёт. "
+                "Стоимость аренды и залог отображаются отдельно."
+            ),
+            (
+                "2. Отправка заявки и резерв",
+                "После оформления заявка поступает на рассмотрение администратора. "
+                "Позиции заказа резервируются с учётом выбранных дат и доступности. "
+                "Отправка заявки сама по себе не означает, что инструмент уже выдан."
+            ),
+            (
+                "3. Подтверждение и получение",
+                "Администратор проверяет заявку и её отдельные позиции. "
+                "Получение оборудования производится согласованным способом "
+                "после подтверждения и выполнения необходимых условий."
+            ),
+            (
+                "4. Залог и стоимость аренды",
+                "Стоимость аренды и обеспечительный залог рассчитываются отдельно. "
+                "Скидки, купоны и бонусные баллы применяются к аренде согласно "
+                "условиям сервиса; залог не уменьшается за счёт скидок и баллов."
+            ),
+            (
+                "5. Возврат и осмотр",
+                "Верните инструмент в согласованный срок и способом, "
+                "указанным для заказа. После возврата администратор проверяет "
+                "состояние каждого экземпляра. Решение по залогу принимается "
+                "с учётом состояния оборудования и условий аренды."
+            ),
+        ],
+    },
+
+    "offer": {
+        "title": "Публичная оферта",
+        "lead": (
+            "Основные принципы оформления аренды через ToolRent. "
+            "Перед использованием сервиса ознакомьтесь с условиями заказа."
+        ),
+        "blocks": [
+            (
+                "1. Предмет аренды",
+                "Сервис предназначен для оформления заявок на временное "
+                "пользование строительным и профессиональным инструментом. "
+                "Состав заказа, количество оборудования и период аренды "
+                "указываются пользователем при оформлении."
+            ),
+            (
+                "2. Стоимость и расчёты",
+                "Стоимость аренды рассчитывается по тарифам, отображаемым "
+                "в карточках инструмента и при оформлении заказа. Итоговая "
+                "сумма может учитывать применимые скидки, купоны и бонусные "
+                "баллы. Обеспечительный залог рассчитывается отдельно."
+            ),
+            (
+                "3. Заявка и подтверждение",
+                "После отправки заявка поступает администратору на рассмотрение. "
+                "Состав заказа и доступность отдельных позиций могут быть "
+                "проверены до подтверждения. Не следует считать заявку "
+                "подтверждённой до изменения её статуса в сервисе."
+            ),
+            (
+                "4. Получение и возврат",
+                "Пользователь обязан получить и вернуть оборудование "
+                "согласованным способом и в согласованные сроки. "
+                "Факт выдачи и возврата отдельных экземпляров фиксируется "
+                "в системе учёта."
+            ),
+            (
+                "5. Сохранность оборудования",
+                "Пользователь обязан бережно обращаться с полученным "
+                "оборудованием и вернуть его в согласованном состоянии. "
+                "Состояние инструмента проверяется при возврате."
+            ),
+            (
+                "6. Важное уточнение",
+                "Этот раздел содержит краткое описание принципов работы сервиса "
+                "и не заменяет полный договор аренды. До публикации в качестве "
+                "юридически значимой публичной оферты необходимо дополнить "
+                "его сведениями об арендодателе, порядке оплаты, отмены, "
+                "возврата залога, ответственности сторон и иных обязательных "
+                "условиях."
+            ),
+        ],
+    },
+
+    "privacy": {
+        "title": "Политика конфиденциальности",
+        "lead": (
+            "На этой странице описаны основные категории данных, "
+            "которые могут использоваться для работы с аккаунтом и заказами."
+        ),
+        "blocks": [
+            (
+                "Какие данные используются",
+                "При работе с сервисом могут использоваться данные профиля: "
+                "ФИО, логин, адрес электронной почты, номер телефона и адрес. "
+                "Для корпоративного профиля дополнительно используются "
+                "сведения об организации и загруженные документы."
+            ),
+            (
+                "Для чего нужны данные",
+                "Данные используются для регистрации и обслуживания аккаунта, "
+                "обработки заявок, связи с пользователем, подтверждения "
+                "бизнес-статуса и ведения истории заказов."
+            ),
+            (
+                "Доступ к информации",
+                "Доступ к данным профиля и корпоративным документам должен "
+                "предоставляться только в объёме, необходимом для работы сервиса. "
+                "Пользователь может обратиться к администратору по вопросам "
+                "своих данных."
+            ),
+            (
+                "Защита информации",
+                "Не передавайте другим лицам пароль от аккаунта. "
+                "Корпоративные документы и персональные сведения не должны "
+                "размещаться в общедоступных каталогах сайта."
+            ),
+            (
+                "Важное уточнение",
+                "Перед использованием этой страницы в качестве полноценной "
+                "политики обработки персональных данных необходимо указать "
+                "оператора данных, правовые основания обработки, сроки хранения, "
+                "порядок реализации прав пользователей и сведения "
+                "о привлечённых обработчиках данных."
+            ),
+        ],
+    },
+}
+
+
+@app.route("/info/<slug>")
+def info_page(slug):
+    page = INFO_PAGES.get(slug)
+    if page is None:
+        abort(404)
+
+    return render_template(
+        "info.html",
+        page=page,
+        slug=slug,
+    )
+
+
+@app.route("/feedback", methods=["POST"])
+def send_feedback():
+    nxt = safe_next("index")
+
+    try:
+        kind = request.form.get("kind", "").strip()
+
+        if kind not in ("Ошибка", "Предложение"):
+            raise ValueError("Выберите тип обращения.")
+
+        contact = field(
+            "contact",
+            255,
+            not bool(g.user),
+            "Контакт для связи"
+        )
+
+        message = field(
+            "text",
+            3000,
+            True,
+            "Текст сообщения"
+        )
+
+        if not message or not message.strip():
+            raise ValueError("Введите текст сообщения.")
+
+        if g.user:
+            sender = (
+                f"Пользователь: {g.user.get('login', 'Не указан')}\n"
+                f"ФИО: {g.user.get('fio', 'Не указано')}\n"
+                f"Email: {g.user.get('email', 'Не указан')}"
+            )
+            if contact:
+                sender += f"\nДополнительный контакт: {contact}"
+        else:
+            sender = f"Гость сайта\nКонтакт: {contact}"
+
+        admins = admin_ids()
+
+        if not admins:
+            raise ValueError("Администратор не найден.")
+
+        # В проекте один администратор — отправляем ему одно уведомление.
+        admin_id = admins[0]
+
+        title = f"Обратная связь: {kind}"
+        body = (
+            f"{sender}\n"
+            f"Страница: {nxt}\n\n"
+            f"Сообщение:\n{message.strip()}"
+        )
+
+        notify(
+            admin_id,
+            title,
+            body,
+            "Обратная связь",
+            mail=False
+        )
+
+        flash("Спасибо! Ваше сообщение отправлено администратору.")
+
+    except ValueError as e:
+        flash(str(e))
+
+    except Exception:
+        app.logger.exception("Ошибка отправки обратной связи")
+        flash("Не удалось отправить сообщение. Попробуйте позже.")
+
+    return redirect(nxt)
+
+
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "make-admin":
         print(make_admin(sys.argv[2]))
         sys.exit(0)
+    startup_sync()                      # серии артикулов и экземпляры по КоличествоНаСкладе (без дубликатов)
     if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not app.debug:
         threading.Thread(target=_due_loop, daemon=True).start()
-    app.run(debug=True)
+    app.run(host='0.0.0.0', debug=True)

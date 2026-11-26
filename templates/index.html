@@ -2,26 +2,16 @@
 {% import "base.html" as b with context %}
 {% block content %}
 
-<section class="hero">
-  <div class="glow g1"></div><div class="glow g2"></div>
-  <div class="wrap hero-in">
-    <div class="hero-text">
-      {% if mode == 'b2b' %}
-        <h1>Инструмент для объектов. <span class="dim">Без простоев и закупок.</span></h1>
-        <p class="lead">Аренда для строительных организаций: одна заявка с несколькими позициями и разными сроками, реквизиты компании в профиле.</p>
-        <div class="row"><a class="btn btn-lg" href="{{ url_for('b2b') }}">Для бизнеса</a><a class="btn btn-ghost btn-lg" href="{{ url_for('catalog') }}">Открыть каталог</a></div>
-      {% else %}
-        <h1>Берите инструмент. <span class="dim">Не покупайте его.</span></h1>
-        <p class="lead">Перфораторы, генераторы, леса и измерительная техника в аренду на сутки и дольше. Заберите сами или закажите доставку.</p>
-        <div class="row"><a class="btn btn-lg" href="{{ url_for('catalog') }}">Выбрать инструмент</a><a class="btn btn-ghost btn-lg" href="#categories">Категории</a></div>
-      {% endif %}
-    </div>
-    <div class="hero-visual" aria-hidden="true">
-      <div class="ring"></div>
-      <img class="hero-tool" src="{{ url_for('img', name='perforator.svg') }}" alt="">
-      <div class="glass chip c1"><small class="muted">Аренда от</small><b>{% if min_price %}{{ min_price|rub }} / сутки{% else %}посуточно{% endif %}</b></div>
-      <div class="glass chip c2"><small class="muted">Залог</small><b>возвращается при сдаче</b></div>
-      <div class="glass chip c3"><small class="muted">Получение</small><b>самовывоз или доставка</b></div>
+<section class="hero-video">
+  <video class="hero-bg" autoplay loop muted playsinline poster="{{ url_for('img', name='perforator.svg') }}">
+    <source src="{{ url_for('img', name='shinkai_build.mp4') }}" type="video/mp4">
+  </video>
+  <div class="hero-overlay"></div>
+  <div class="wrap hero-inner">
+    <h1 class="hero-title">ToolRent — инструмент<br>для <span>больших проектов</span></h1>
+    <div class="row hero-actions">
+      <a class="btn btn-lg" href="{{ url_for('catalog') }}">Выбрать инструмент</a>
+      <a class="btn btn-lg btn-ghost" href="#categories">Категории</a>
     </div>
   </div>
 </section>
