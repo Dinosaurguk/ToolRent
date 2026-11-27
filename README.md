@@ -56,7 +56,7 @@ b2b/бизнес| Логин: petuh000 | Пароль: petuh0000
 |---|---|
 | Серверная часть | Python 3, Flask |
 | Шаблоны | Jinja2 |
-| Клиентская часть | HTML5, CSS3 (JavaScript не используется) |
+| Клиентская часть | HTML5, CSS3, JavaScript |
 | База данных | Microsoft Access (`database.accdb`) |
 | Доступ к базе | `pyodbc` и драйвер Microsoft Access Database Engine (ODBC) |
 | Пароли | Хеши PBKDF2-SHA256 (`werkzeug.security`, входит в состав Flask) |
