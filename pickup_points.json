@@ -1,0 +1,40 @@
+{
+  "next_id": 6,
+  "points": [
+    {
+      "id_pickup": 1,
+      "name": "Склад Северный",
+      "address": "г. Краснодар, ул. Дзержинского, д. 100/1, павильон 14",
+      "schedule": "Пн–Пт 08:00–20:00, Сб–Вс 09:00–18:00",
+      "active": true
+    },
+    {
+      "id_pickup": 2,
+      "name": "Brooklyn Tool Hub",
+      "address": "450 Kent Ave, Brooklyn, NY 11249, USA",
+      "schedule": "Mon–Fri 07:00–19:00, Sat 08:00–16:00",
+      "active": true
+    },
+    {
+      "id_pickup": 3,
+      "name": "BauPunkt Mitte",
+      "address": "Torstraße 112, 10119 Berlin, Germany",
+      "schedule": "Пн–Сб 07:30–20:00, Вс — выходной",
+      "active": true
+    },
+    {
+      "id_pickup": 4,
+      "name": "BauPunkt Mitte",
+      "address": "Torstraße 112, 10119 Berlin, Germany",
+      "schedule": "Пн–Сб 07:30–20:00, Вс — выходной",
+      "active": true
+    },
+    {
+      "id_pickup": 5,
+      "name": "Shibuya Express Pick-up",
+      "address": "2-24-12 Shibuya, Shibuya-ku, Tokyo 150-0002, Japan",
+      "schedule": "Пн–Вс 09:00–21:00",
+      "active": true
+    }
+  ]
+}
